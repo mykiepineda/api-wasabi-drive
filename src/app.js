@@ -11,6 +11,7 @@ app.use(express.urlencoded({ extended: false }));
 app.use(cors());
 
 /* API Endpoints */
+app.options("*", cors());
 app.use("/buckets", require("./api/buckets"));
 app.use("/auth", require("./api/auth"));
 

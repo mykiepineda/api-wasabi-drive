@@ -1,0 +1,26 @@
+service: api-wasabi-drive
+frameworkVersion: "3"
+provider:
+  name: aws
+  runtime: nodejs16.x
+  stage: prd
+  region: ap-southeast-2
+  endpointType: regional
+functions:
+  app:
+    handler: src/app.handler
+    description: "Returns information about my Wasabi cloud storage"
+    events:
+      - http: # this is an API Gateway HTTP event trigger
+          path: /
+          method: ANY
+          cors: true
+      - http: # all routes get proxied to the Express router
+          path: /{proxy+}
+          method: ANY
+          cors: true
+    environment:
+      WASABI_SERVICE_URL: s3.ap-northeast-1.wasabisys.com
+      WASABI_ACCESS_KEY_ID: Z5QQ38VNUCU81ANC8NZE
+      WASABI_SECRET_ACCESS_KEY: DmJTppTMTEbXJi8KIlEk1i2mteWtKBAp3hYHrdWV
+      MONGODB_ATLAS_URI: mongodb+srv://mykiepineda:P1n3d%40j0hN@cluster0.omg3p.mongodb.net/wasabi-drive?retryWrites=true&w=majority

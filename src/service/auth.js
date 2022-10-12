@@ -1,9 +1,15 @@
-const { mongodb, getCollection } = require("../util/database");
+const { clientPromise } = require("../util/database");
 const { encryptPassword, comparePasswords } = require("../util/password");
 const { v4: uuid } = require("uuid");
 
+const getUsersCollection = async () => {
+  const client = await clientPromise;
+  const db = client.db();
+  return db.collection("users");
+};
+
 const getUsers = async ({ id, name }) => {
-  const users = getCollection("users");
+  const users = await getUsersCollection();
   if (id || name) {
     let filter;
     if (id) {
@@ -37,7 +43,7 @@ const createUser = async (req) => {
     token: uuid(),
   };
 
-  const users = getCollection("users");
+  const users = await getUsersCollection();
 
   return await users.insertOne(payload);
 };
@@ -71,7 +77,7 @@ const updateUser = async (id, req) => {
     }
   }
 
-  const users = getCollection("users");
+  const users = await getUsersCollection();
 
   return users.findOneAndUpdate(
     { _id: mongodb.ObjectId(id) },

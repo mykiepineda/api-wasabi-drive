@@ -20,7 +20,7 @@ functions:
           method: ANY
           cors: true
     environment:
-      WASABI_SERVICE_URL: s3.ap-northeast-1.wasabisys.com
-      WASABI_ACCESS_KEY_ID: Z5QQ38VNUCU81ANC8NZE
-      WASABI_SECRET_ACCESS_KEY: DmJTppTMTEbXJi8KIlEk1i2mteWtKBAp3hYHrdWV
-      MONGODB_ATLAS_URI: mongodb+srv://mykiepineda:P1n3d%40j0hN@cluster0.omg3p.mongodb.net/wasabi-drive?retryWrites=true&w=majority
+      WASABI_SERVICE_URL: s3.***.com
+      WASABI_ACCESS_KEY_ID: Z5***ZE
+      WASABI_SECRET_ACCESS_KEY: Dm***WV
+      MONGODB_ATLAS_URI: mongodb+srv://***:***@cluster0.omg3p.mongodb.net/wasabi-drive?retryWrites=true&w=majority

@@ -5,7 +5,7 @@
   "main": "src/app.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "nodemon src/app.js",
+    "start": "nodemon src/server.js",
     "deploy": "serverless deploy"
   },
   "keywords": [],
@@ -17,7 +17,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.0.2",
     "express": "^4.18.1",
-    "mongodb": "^4.10.0",
+    "mongodb": "^4.17.2",
     "nodemon": "^2.0.20",
     "serverless": "^3.22.0",
     "serverless-http": "^3.0.3",

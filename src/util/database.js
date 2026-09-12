@@ -1,16 +1,15 @@
 const mongodb = require("mongodb");
 const mongoClient = mongodb.MongoClient;
+const config = require("../config");
 
 const dns = require("dns");
 
-const dnsServers = process.env.MONGODB_DNS_SERVERS?.split(",")
-  .map((server) => server.trim())
-  .filter(Boolean);
+const dnsServers = config.mongodb.dnsServers;
 
 if (dnsServers?.length) {
   dns.setServers(dnsServers);
 }
-const client = new mongoClient(process.env.MONGODB_ATLAS_URI, {
+const client = new mongoClient(config.mongodb.atlasUri, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 });

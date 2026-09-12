@@ -1,13 +1,10 @@
-const dotenv = require("dotenv");
-
-dotenv.config();
-
 const AWS = require("aws-sdk");
+const config = require("../config");
 
 AWS.config.update({
-  accessKeyId: process.env.WASABI_ACCESS_KEY_ID,
-  secretAccessKey: process.env.WASABI_SECRET_ACCESS_KEY,
-  endpoint: new AWS.Endpoint(process.env.WASABI_SERVICE_URL),
+  accessKeyId: config.wasabi.accessKeyId,
+  secretAccessKey: config.wasabi.secretAccessKey,
+  endpoint: new AWS.Endpoint(config.wasabi.serviceUrl),
 });
 
 const s3 = new AWS.S3();

@@ -1,4 +1,4 @@
-const { clientPromise } = require("../util/database");
+const { mongodb, clientPromise } = require("../util/database");
 const { encryptPassword, comparePasswords } = require("../util/password");
 const { v4: uuid } = require("uuid");
 

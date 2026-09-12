@@ -1,0 +1,22 @@
+meta {
+  name: Update user
+  type: http
+  seq: 5
+}
+
+patch {
+  url: {{baseUrl}}/auth/users/{{userId}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "name": "{{userName}}",
+    "password": "{{userPassword}}"
+  }
+}

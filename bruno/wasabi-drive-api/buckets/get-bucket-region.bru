@@ -1,0 +1,11 @@
+meta {
+  name: Get bucket region
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/buckets/{{bucketName}}/region
+  body: none
+  auth: none
+}

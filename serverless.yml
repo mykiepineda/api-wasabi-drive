@@ -1,5 +1,6 @@
 service: api-wasabi-drive
 frameworkVersion: "3"
+useDotenv: true
 provider:
   name: aws
   runtime: nodejs16.x
@@ -20,7 +21,7 @@ functions:
           method: ANY
           cors: true
     environment:
-      WASABI_SERVICE_URL: s3.***.com
-      WASABI_ACCESS_KEY_ID: Z5***ZE
-      WASABI_SECRET_ACCESS_KEY: Dm***WV
-      MONGODB_ATLAS_URI: mongodb+srv://***:***@cluster0.omg3p.mongodb.net/wasabi-drive?retryWrites=true&w=majority
+      WASABI_SERVICE_URL: ${env:WASABI_SERVICE_URL}
+      WASABI_ACCESS_KEY_ID: ${env:WASABI_ACCESS_KEY_ID}
+      WASABI_SECRET_ACCESS_KEY: ${env:WASABI_SECRET_ACCESS_KEY}
+      MONGODB_ATLAS_URI: ${env:MONGODB_ATLAS_URI}

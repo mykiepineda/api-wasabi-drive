@@ -1,0 +1,22 @@
+meta {
+  name: Validate user credentials
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/auth/users/validate
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "name": "{{userName}}",
+    "password": "{{userPassword}}"
+  }
+}

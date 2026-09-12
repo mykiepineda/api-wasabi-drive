@@ -1,0 +1,15 @@
+meta {
+  name: List bucket objects
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/buckets/{{bucketName}}/objects{{objectPrefix}}
+  body: none
+  auth: none
+}
+
+query {
+  MaxKeys: 25
+}

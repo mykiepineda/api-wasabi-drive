@@ -14,10 +14,5 @@ app.options("*", cors());
 app.use("/buckets", require("./api/buckets"));
 app.use("/auth", require("./api/auth"));
 
-const PORT = process.env.PORT || 8080;
-
-app.listen(PORT, () => {
-  console.log(`Server started at Port ${PORT}`);
-});
-
+module.exports = app;
 module.exports.handler = serverless(app);

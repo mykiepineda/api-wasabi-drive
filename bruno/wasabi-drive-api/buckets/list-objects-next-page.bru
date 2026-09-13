@@ -14,3 +14,10 @@ query {
   MaxKeys: 25
   ContinuationToken: {{continuationToken}}
 }
+
+tests {
+  test("returns the next object listing page", function() {
+    expect(res.status).to.equal(200);
+    expect(res.body).to.have.property("TotalKeyCount");
+  });
+}

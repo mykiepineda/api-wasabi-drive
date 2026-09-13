@@ -1,7 +1,7 @@
 meta {
   name: Validate user credentials
   type: http
-  seq: 4
+  seq: 3
 }
 
 post {
@@ -19,4 +19,13 @@ body:json {
     "name": "{{userName}}",
     "password": "{{userPassword}}"
   }
+}
+
+tests {
+  test("validates user credentials", function() {
+    expect(res.status).to.equal(200);
+    expect(res.body).to.have.property("isAuthenticated");
+    expect(res.body.isAuthenticated).to.equal(true);
+    expect(res.body).to.have.property("token");
+  });
 }

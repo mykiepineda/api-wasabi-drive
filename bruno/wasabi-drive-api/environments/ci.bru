@@ -1,9 +1,9 @@
 vars {
-  baseUrl: {{$processEnv BASE_URL}}
-  bucketName: {{$processEnv INTEGRATION_BUCKET_NAME}}
+  baseUrl: {{process.env.BASE_URL}}
+  bucketName: {{process.env.INTEGRATION_BUCKET_NAME}}
   objectPrefix: /
-  continuationToken: {{$processEnv INTEGRATION_CONTINUATION_TOKEN}}
+  continuationToken: {{process.env.INTEGRATION_CONTINUATION_TOKEN}}
   userId: replace-at-runtime
-  userName: {{$processEnv INTEGRATION_USER_NAME}}
-  userPassword: {{$processEnv INTEGRATION_USER_PASSWORD}}
+  userName: {{process.env.INTEGRATION_USER_NAME}}
+  userPassword: {{process.env.INTEGRATION_USER_PASSWORD}}
 }

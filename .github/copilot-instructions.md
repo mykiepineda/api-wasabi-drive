@@ -1,326 +1,247 @@
 # Wasabi Drive API - Copilot Instructions
 
-## Project context
+## Project goal
 
-Wasabi Drive API is an existing Node.js/Express API for browsing and previewing
-files stored in Wasabi Cloud Storage.
+Wasabi Drive API is an existing Node.js/Express API for browsing files in
+Wasabi Cloud Storage.
 
-The application is currently intended for a small number of trusted users, but
-it may eventually evolve into a multi-user product.
+The immediate goal is **a stable, tested, frontend-compatible RC1 that can be
+deployed before the developer's limited GitHub Copilot credits are exhausted**.
+Do not try to finish every modernization item before RC1.
 
-This project is also being used to learn and apply enterprise-level software
-architecture and engineering practices.
+Prioritize only:
 
-## Modernization approach
+1. RC1 deployment blockers;
+2. security patches required for RC1;
+3. regressions that affect the existing frontend.
 
-Modernize the application incrementally.
+Defer optional modernization until after RC1 unless explicitly requested.
+Prefer one small implementation task over speculative assessment/refactoring.
+Do not automatically continue to the next task.
 
-Do not perform large-scale rewrites unless explicitly requested.
+## Preserve the existing frontend contract for RC1
 
-Prefer small, reviewable changes that preserve existing behavior unless a
-behavior change has been explicitly approved.
+Unless explicitly approved, do not change:
 
-The developer remains responsible for architectural decisions. For significant
-changes, inspect the current implementation, explain the problem and proposed
-boundary, and obtain approval before broad implementation when the prompt asks
-for an assessment first.
+- route paths or HTTP methods;
+- request/query parameter names;
+- successful response shapes;
+- status-code behavior;
+- bucket/object response structures;
+- current login/validation response shapes;
+- CORS behavior;
+- the current legacy authentication contract.
 
-Do not opportunistically fix unrelated issues during a scoped task.
+If a requested change is likely to break the existing frontend, stop and report
+the compatibility risk before changing behavior.
 
-## Current phase
+## Current architecture
 
-The project is in Phase 2: Structural Refactoring, with a pre-deployment
-hardening checkpoint in progress.
+Keep these established boundaries:
 
-Completed architectural changes include:
+- `src/server.js` owns local HTTP startup.
+- `src/app.js` constructs the Express application and Lambda handler.
+- `src/config` is the application configuration boundary.
+- Bucket flow is:
+  `src/api/buckets.js` -> `src/service/buckets.js` ->
+  `src/storage/wasabi.js` -> AWS SDK -> Wasabi.
+- Only the storage/infrastructure layer should use the AWS SDK directly.
+- Application services should not depend on Express `req`/`res` objects.
 
-- Express application construction is separated from local server startup.
-- Environment configuration is centralized under `src/config`.
-- Deployment secrets are not stored as literal values in tracked
-  `serverless.yml`.
-- AWS Lambda targets Node.js 24.
-- Serverless Framework v4 is used.
-- Bucket routes call an application service rather than the Wasabi SDK
-  implementation directly.
-- Wasabi/AWS SDK code is isolated under `src/storage/wasabi.js`.
-- A Node built-in unit-test suite exists.
-- A Bruno API integration-test collection exists.
+Prefer a modular monolith and small, concrete boundaries. Do not introduce
+provider factories, DI frameworks, abstract base classes, microservices, or
+other speculative abstractions.
 
-Do not undo these boundaries without an explicitly approved architectural
-reason.
+## Runtime/deployment conventions
 
-## Runtime and deployment conventions
+Current supported stack:
 
-The supported Node.js major version is Node 24, as declared in `package.json`.
-
-The project uses:
-
-- CommonJS (`require` / `module.exports`);
-- Express;
+- Node.js 24 (`package.json` is the runtime contract);
+- CommonJS;
+- Express 4 for RC1;
 - Serverless Framework v4;
 - AWS Lambda;
 - API Gateway REST API;
 - `serverless-http`.
 
-Do not migrate CommonJS to ESM, JavaScript to TypeScript, Express to another
-framework, API Gateway REST API to HTTP API, or Serverless to another
-infrastructure framework unless explicitly requested.
+Do not migrate to Express 5, ESM, TypeScript, HTTP API, Terraform/CDK, or another
+framework unless explicitly requested.
 
-Do not deploy or create/update AWS resources unless the task explicitly
-authorizes deployment.
+Do not deploy or modify AWS resources unless the task explicitly authorizes it.
 
 ## Configuration and secrets
 
-Application configuration is centralized in `src/config`.
+Configuration is centralized in `src/config`.
 
-Application modules outside the configuration boundary should not directly
-interpret application environment variables unless explicitly justified.
+Tracked files must never contain real credentials, passwords, authenticated
+MongoDB URIs, AWS credentials, Serverless keys, or other secrets.
 
-Local development configuration may come from ignored `.env` files.
+Keep:
 
-Tracked files must never contain real:
+- `.env` untracked;
+- `.serverless` untracked;
+- `serverless.yml` using `${env:...}` references.
 
-- Wasabi access keys;
-- Wasabi secret keys;
-- MongoDB passwords or authenticated connection strings;
-- AWS credentials;
-- Serverless access/license keys;
-- other secrets or tokens.
+Do not print or copy secret values into logs, reports, examples, or responses.
+If a secret is found in source/history, report only its type/location and
+recommend rotation.
 
-`serverless.yml` should reference environment variables rather than contain
-literal secrets.
+## Legacy MongoDB authentication freeze
 
-`.env` and `.serverless` artifacts must remain untracked.
+The current MongoDB/password/UUID authentication is temporary and is expected
+to be replaced after RC1 by Microsoft Entra ID.
 
-Do not print, log, commit, copy into test reports, or reproduce secret values.
+Do **not** spend RC1 effort refactoring the legacy auth implementation merely
+for cleanliness or long-term design.
 
-If a secret is discovered in tracked source or Git history, report the type and
-location without displaying the value and recommend credential rotation.
+Do not introduce new auth repositories/controllers, improve UUID token design,
+add refresh-token behavior, or restructure the users collection unless a task
+explicitly requires it.
 
-## Architectural direction
+Only change legacy auth before Entra when it is:
 
-The API is a modular monolith with clear responsibility boundaries.
+- an RC1 blocker;
+- a regression used by the current frontend; or
+- an explicitly approved immediate security containment fix.
 
-Prefer this dependency direction:
+After RC1, Entra should be designed as a coordinated frontend/backend change;
+MongoDB should be removed if auth is its only remaining use.
 
-Express routes
--> application/service logic
--> infrastructure/storage implementation
--> external SDK/service
+## Refactoring discipline
 
-For bucket/storage functionality, the intended flow is:
+For each scoped change:
 
-`src/api/buckets.js`
--> `src/service/buckets.js`
--> `src/storage/wasabi.js`
--> AWS SDK
--> Wasabi
+1. understand the existing responsibility;
+2. make the smallest useful change;
+3. preserve unrelated behavior;
+4. avoid unrelated cleanup/formatting;
+5. keep the diff reviewable and independently committable;
+6. stop when the requested task is complete.
 
-### HTTP boundary
+Do not opportunistically fix known defects during unrelated work.
 
-Express route modules should own HTTP concerns such as:
+## Unit-test regression gate
 
-- route registration;
-- request parameter extraction;
-- HTTP status codes;
-- response serialization.
-
-Application services should not depend on Express `req` or `res` objects.
-
-### Application/service boundary
-
-Application services should own use-case orchestration and application logic.
-
-They should not:
-
-- import Express;
-- configure AWS SDK clients;
-- read Wasabi credentials;
-- depend on HTTP request/response objects.
-
-### Storage boundary
-
-`src/storage/wasabi.js` currently owns Wasabi/AWS SDK infrastructure concerns.
-
-Other application modules should not import `aws-sdk` directly unless an
-explicitly approved migration changes this boundary.
-
-Do not introduce a generic provider framework, provider factory, dependency
-injection framework, abstract base class, or speculative interface solely for
-future extensibility.
-
-## Refactoring rules
-
-For a significant refactoring:
-
-1. Identify the current responsibility of the affected code.
-2. Identify the actual structural or maintenance problem.
-3. Explain the proposed responsibility/boundary change.
-4. Prefer the smallest useful change.
-5. Identify behavior and risks that must be verified.
-6. Keep unrelated behavior unchanged.
-7. Keep the change small enough to review and commit independently whenever
-   practical.
-
-Avoid speculative abstractions and design-pattern usage for its own sake.
-
-Do not perform unrelated formatting or cleanup in a scoped refactor.
-
-## Automated unit-test regression gate
-
-The existing unit tests are a required regression gate.
-
-The standard unit-test command is:
+Standard command:
 
 `npm test`
 
-For behavior-preserving refactors and dependency changes:
+For behavior-preserving refactors/dependency changes:
 
-1. Run `npm test` before modifying production code.
-2. Record the baseline result.
-3. Run `npm test` after the change.
-4. Existing passing tests must remain passing.
-5. Do not delete, skip, weaken, or rewrite assertions merely to make a change
-   pass.
+1. run it before the change;
+2. record the baseline;
+3. run it after the change;
+4. existing passing tests must remain passing.
 
-If tests fail before the requested change, report the baseline failure instead
-of hiding it.
+Do not delete, skip, weaken, or rewrite assertions merely to make a change pass.
+If the baseline already fails, report it rather than hiding it.
 
-If a behavior change is explicitly approved, update or add tests only when the
-old assertion no longer represents the approved contract.
+## Bruno integration-test regression gates
 
-Add focused tests when a change affects important behavior that is not
-adequately protected, but do not turn every scoped task into a broad testing
-initiative.
+The project uses the project-local `@usebruno/cli`.
 
-## Bruno integration-test regression gate
-
-The repository contains a Bruno collection under
-`bruno/wasabi-drive-api`.
-
-The npm integration command is:
+### Normal green regression gate
 
 `npm run test:integration`
 
-Integration testing requires live external dependencies and must be treated
-differently from isolated unit tests.
+This scope must remain:
 
-Before running Bruno tests:
+- read-only;
+- expected to pass;
+- free of known-defect scenarios;
+- non-production.
 
-- verify that the target is local or explicitly non-production;
-- verify the required environment variables are configured;
-- verify that Wasabi and MongoDB resources used for testing are safe for the
-  test;
-- never run mutating user requests against production data;
-- use unique/disposable integration-test user data where required.
+All automated scopes require:
 
-If the required integration environment is unavailable, report that the
-integration suite was not run. Do not fabricate results and do not modify tests
-merely to bypass unavailable infrastructure.
+`INTEGRATION_TARGET=local`, `development`, or `test`.
 
-For applicable refactors, run the same safe integration scope before and after
-the change and compare results.
+Production/unknown targets must be rejected.
 
-### Current integration-test limitation
+If the safe integration environment is unavailable, report that limitation;
+do not fabricate results or weaken the tests.
 
-The current Bruno collection includes mutating authentication requests and an
-`Update user` scenario that exposes a known existing API defect.
+### Broader mutating scope
 
-Do not redefine the defect as successful behavior, weaken the assertion, or
-silently ignore a new failure.
+`npm run test:integration:full`
 
-Until the test harness or defect is explicitly addressed:
+This is not the normal green gate. It may mutate MongoDB and requires:
 
-- clearly distinguish passing regression scenarios from known-defect scenarios;
-- do not claim the entire integration suite is green if the known defect still
-  fails;
-- do not run destructive requests against production;
-- report baseline known failures separately from newly introduced regressions.
+`INTEGRATION_ALLOW_MUTATIONS=true`
 
-## Test artifacts
+Run it only against disposable non-production data.
 
-Generated test reports should not be committed unless explicitly intended as
-versioned project artifacts.
+### Known-defect scope
 
-Do not expose secrets, passwords, tokens, authorization headers, or sensitive
-response bodies in committed test reports.
+`npm run test:integration:known-defects`
 
-## Security posture
+The `known-defect-flow` tag reproduces the existing user-update defect. This
+command may fail while the defect remains and is not part of the normal green
+gate.
 
-Security-sensitive behavior must not be changed incidentally during structural
-refactoring.
+Do not redefine the defect as successful behavior during unrelated work.
 
-Known security/deployment concerns should be handled as explicit tasks with
-their own review and tests.
+### Report safety
 
-Do not assume CORS is authentication or authorization.
-
-Do not expose password hashes, tokens, credentials, or secret configuration in
-logs, reports, example files, or Copilot responses.
-
-## Known issues / modernization backlog
-
-The following issues are known. Do not opportunistically fix them during an
-unrelated task:
-
-- API authorization is not yet implemented for the public endpoints.
-- User-management responses currently expose database documents too directly.
-- The user update flow has an existing MongoDB `_id` update defect.
-- The Wasabi total-key pagination flow currently loses `Prefix` on subsequent
-  pages.
-- MongoDB connection initialization currently occurs during module import.
-- AWS SDK for JavaScript v2 is end-of-support and should eventually migrate to
-  v3.
-- Express and some related dependencies require security/maintenance updating.
-- Error handling is still route-local and inconsistent.
-- Broad CORS behavior needs to be reconsidered as part of security hardening.
-
-Treat each as a separate, explicitly approved task unless the current prompt
-specifically scopes it in.
+`bruno-results.xml` must remain ignored.
+Keep Bruno reporter settings that suppress request/response bodies and headers
+so sensitive data is not persisted in reports.
 
 ## Dependency changes
 
 Do not run broad dependency upgrades.
 
-For dependency-security or runtime tasks:
+For an approved dependency/security task:
 
-- change only dependencies required by the approved task;
-- allow necessary transitive lockfile changes;
-- do not run `npm audit fix --force`;
-- do not use audit findings as permission to upgrade unrelated packages;
-- report remaining findings for separate review.
+- change only the requested direct dependency;
+- allow required transitive lockfile changes;
+- keep `package.json` and `package-lock.json` consistent;
+- do not run `npm audit fix` or `npm audit fix --force` automatically;
+- report unrelated audit findings separately;
+- major-version upgrades require explicit approval.
 
-Major-version upgrades require explicit approval.
+For RC1 remain on Express 4.
 
-## Scope constraints
+## RC1 work queue
 
-Unless explicitly requested, do not introduce:
+Unless a new blocker is found, prioritize:
 
-- microservices;
-- a new database;
-- authentication-provider redesign;
-- new AWS or Azure infrastructure;
-- Terraform or CDK;
-- CI/CD redesign;
-- TypeScript migration;
-- ESM migration;
-- major UI work;
-- framework replacement;
-- speculative multi-cloud support;
-- unrelated dependency upgrades.
+1. upgrade Express within the Express 4 line to the approved secure target;
+2. verify unit tests and the safe Bruno regression scope;
+3. freeze non-essential backend refactoring;
+4. perform an explicitly authorized non-production deployment checkpoint;
+5. test the existing frontend end-to-end against that deployment;
+6. fix only concrete RC1 blockers discovered by deployment/frontend testing.
 
-## Completion expectations
+Do not start Entra, AWS SDK v3 migration, centralized error handling, MongoDB
+lifecycle refactoring, CI/CD, or other optional modernization before RC1 unless
+explicitly requested.
 
-For an implementation task, provide a concise completion report containing:
+## Known deferred issues
+
+Do not opportunistically fix these during unrelated RC1 work:
+
+- legacy API authorization will later be replaced by Entra;
+- user responses expose database documents too directly;
+- user update has a MongoDB `_id` update defect;
+- Wasabi total-count pagination loses `Prefix` on subsequent pages;
+- MongoDB connects during module import;
+- AWS SDK v2 is end-of-support and should later migrate to v3;
+- route-local error handling is inconsistent;
+- broad CORS behavior should be reconsidered with the future auth/frontend
+  design.
+
+Some MongoDB/auth issues may disappear when legacy auth is removed; do not
+refactor code scheduled for replacement unless it blocks RC1.
+
+## Completion report
+
+For implementation tasks, report only what is useful for review:
 
 - files changed;
-- responsibilities or behavior changed;
-- tests run before and after;
-- unit-test results;
-- applicable integration-test results or a clear reason they could not safely
-  run;
-- assumptions and limitations;
-- any remaining known issues relevant to the task.
+- versions/dependencies changed when relevant;
+- unit-test baseline/final result;
+- safe integration-test baseline/final result, or why it could not safely run;
+- any application behavior intentionally changed;
+- remaining RC1 blocker relevant to the task.
 
-Do not proceed automatically to the next modernization task after completing
-the requested scope.
+Do not continue to another modernization item without being asked.

@@ -1,9 +1,8 @@
 service: api-wasabi-drive
-frameworkVersion: "3"
-useDotenv: true
+frameworkVersion: "4"
 provider:
   name: aws
-  runtime: nodejs16.x
+  runtime: nodejs24.x
   stage: prd
   region: ap-southeast-2
   endpointType: regional

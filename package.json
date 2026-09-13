@@ -9,6 +9,8 @@
   "scripts": {
     "test": "node --test",
     "test:integration": "node scripts/run-integration.js",
+    "test:integration:full": "node scripts/run-integration.js full",
+    "test:integration:known-defects": "node scripts/run-integration.js known-defects",
     "start": "nodemon src/server.js",
     "deploy": "serverless deploy"
   },
@@ -26,5 +28,8 @@
     "serverless": "^4.42.0",
     "serverless-http": "^3.0.3",
     "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@usebruno/cli": "^4.1.0"
   }
 }

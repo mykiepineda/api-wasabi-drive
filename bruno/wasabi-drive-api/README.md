@@ -1,48 +1,37 @@
 # Wasabi Drive API Bruno Collection
 
-Import the `bruno/wasabi-drive-api` folder into Bruno and select the `local` environment.
+Use the project-local Bruno CLI through the npm scripts. Every automated scope requires an explicitly non-production target: `local`, `development`, or `test`.
 
-Start the API with `npm start`, then replace the placeholder values in `environments/local.bru` before running requests that use a bucket or user ID.
+## Normal regression
 
- The project installs the Bruno CLI locally. Run the normal, read-only regression scope with:
-
- ```bash
- npm run test:integration
- ```
-
- It uses the `ci` environment and requires `BASE_URL`, `INTEGRATION_BUCKET_NAME`, and `INTEGRATION_CONTINUATION_TOKEN`. This scope runs bucket reads and `List users`; it does not create users or run requests that depend on a runtime-created user ID.
-
-## CI execution
-
-Install the Bruno CLI in the CI image, set the variables consumed by `environments/ci.bru`, then run:
-
-```bash
-cd bruno/wasabi-drive-api
-bru run . -r --env ci --output ../../bruno-results.xml --format junit
+```powershell
+$env:INTEGRATION_TARGET = "local"
+$env:BASE_URL = "http://localhost:8080"
+$env:INTEGRATION_BUCKET_NAME = "..."
+$env:INTEGRATION_CONTINUATION_TOKEN = "..."
+npm run test:integration
 ```
 
-The same command is available as `npm run test:integration`. Use a dedicated test database and unique `userName`, because the API does not provide a delete-user endpoint.
+This is the expected-to-pass, read-only scope. It excludes user creation, user update, dependent user-flow requests, and known defects. The `ci` environment reads the variables above and writes `bruno-results.xml`. Report request/response bodies and all headers are intentionally suppressed.
 
- ## Broader coverage
+## Full coverage
 
- The `Create user` request writes to MongoDB. `Validate user credentials` and `Get user by id` are read-only requests but depend on its runtime `userId`; the collection runs them in sequence. `Update user` also writes to MongoDB and is tagged `known-defect` because the current service includes MongoDB's immutable `_id` in its update payload.
+Set `INTEGRATION_USER_NAME` and `INTEGRATION_USER_PASSWORD` to unique disposable values, then explicitly allow mutations:
 
- Run broader coverage only against a dedicated local, development, or test environment with disposable data:
+```powershell
+$env:INTEGRATION_TARGET = "development"
+$env:INTEGRATION_ALLOW_MUTATIONS = "true"
+npm run test:integration:full
+```
 
- ```powershell
- $env:INTEGRATION_TARGET = "development"
- $env:INTEGRATION_ALLOW_MUTATIONS = "true"
- npm run test:integration:full
- ```
+This scope provides broader disposable-data coverage while excluding known defects. `Create user` and `Update user` mutate MongoDB, and there is no delete-user endpoint. Never use production for automated integration tests.
 
- Set the variables consumed by `environments/ci.bru`, including a unique `INTEGRATION_USER_NAME` and `INTEGRATION_USER_PASSWORD`. There is no delete-user endpoint, so use disposable test data. Never point mutating integration tests at production.
+## Known defects
 
-The known defect is excluded from the full scope and can be run separately, with the same safety variables. This scope includes the ordered create-user dependency chain needed to provide its runtime user ID:
+```powershell
+$env:INTEGRATION_TARGET = "development"
+$env:INTEGRATION_ALLOW_MUTATIONS = "true"
+npm run test:integration:known-defects
+```
 
- ```bash
- npm run test:integration:known-defects
- ```
-
- This command does not redefine the update expectation; its current HTTP 200 assertion remains unchanged so the existing defect stays visible.
-
- JUnit output is written to `bruno-results.xml`, which is ignored by Git.
+The `known-defect-flow` tag selects the ordered create-user, validate-credentials, get-user, and update-user requests needed to reproduce the MongoDB `_id` update defect. Its HTTP 200 expectation is unchanged. A failure is expected until the defect is intentionally fixed; this command is not part of the green regression gate.

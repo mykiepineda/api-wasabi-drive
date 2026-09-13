@@ -18,7 +18,7 @@ const scope = process.argv[2] ?? "regression";
 const scopeOptions = {
   regression: ["--tags", "regression"],
   full: ["--exclude-tags", "known-defect"],
-  "known-defects": ["--tags", "mutating,depends-on-create-user"],
+  "known-defects": ["--tags", "known-defect-flow"],
 };
 
 if (!scopeOptions[scope]) {
@@ -26,14 +26,15 @@ if (!scopeOptions[scope]) {
   process.exit(1);
 }
 
+const target = process.env.INTEGRATION_TARGET;
+if (!target || !["local", "development", "test"].includes(target)) {
+  console.error(
+    "Integration tests require INTEGRATION_TARGET=local, development, or test."
+  );
+  process.exit(1);
+}
+
 if (scope !== "regression") {
-  const target = process.env.INTEGRATION_TARGET;
-  if (!target || !["local", "development", "test"].includes(target)) {
-    console.error(
-      "Full integration tests require INTEGRATION_TARGET=local, development, or test."
-    );
-    process.exit(1);
-  }
   if (process.env.INTEGRATION_ALLOW_MUTATIONS !== "true") {
     console.error(
       "Full integration tests require INTEGRATION_ALLOW_MUTATIONS=true."
@@ -54,6 +55,8 @@ const result = spawnSync(
     ...scopeOptions[scope],
     "--reporter-junit",
     resultPath,
+    "--reporter-skip-body",
+    "--reporter-skip-all-headers",
   ],
   { cwd: collectionPath, stdio: "inherit" }
 );

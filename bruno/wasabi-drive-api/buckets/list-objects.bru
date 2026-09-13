@@ -13,3 +13,10 @@ get {
 query {
   MaxKeys: 25
 }
+
+tests {
+  test("returns an object listing with a total count", function() {
+    expect(res.status).to.equal(200);
+    expect(res.body).to.have.property("TotalKeyCount");
+  });
+}

@@ -6,3 +6,6 @@ jspm_packages
 .serverless
 
 .env
+
+# Bruno test reports
+bruno-results.xml

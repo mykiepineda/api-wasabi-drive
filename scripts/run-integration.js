@@ -1,13 +1,60 @@
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const brunoCommand = process.platform === "win32" ? "bru.cmd" : "bru";
+const brunoCommand = process.execPath;
+const brunoEntryPoint = path.resolve(
+  __dirname,
+  "..",
+  "node_modules",
+  "@usebruno",
+  "cli",
+  "bin",
+  "bru.js"
+);
 const collectionPath = path.resolve(__dirname, "..", "bruno", "wasabi-drive-api");
 const resultPath = path.resolve(__dirname, "..", "bruno-results.xml");
+const scope = process.argv[2] ?? "regression";
+
+const scopeOptions = {
+  regression: ["--tags", "regression"],
+  full: ["--exclude-tags", "known-defect"],
+  "known-defects": ["--tags", "mutating,depends-on-create-user"],
+};
+
+if (!scopeOptions[scope]) {
+  console.error(`Unknown integration scope: ${scope}`);
+  process.exit(1);
+}
+
+if (scope !== "regression") {
+  const target = process.env.INTEGRATION_TARGET;
+  if (!target || !["local", "development", "test"].includes(target)) {
+    console.error(
+      "Full integration tests require INTEGRATION_TARGET=local, development, or test."
+    );
+    process.exit(1);
+  }
+  if (process.env.INTEGRATION_ALLOW_MUTATIONS !== "true") {
+    console.error(
+      "Full integration tests require INTEGRATION_ALLOW_MUTATIONS=true."
+    );
+    process.exit(1);
+  }
+}
 
 const result = spawnSync(
   brunoCommand,
-  ["run", ".", "-r", "--env", "ci", "--output", resultPath, "--format", "junit"],
+  [
+    brunoEntryPoint,
+    "run",
+    ".",
+    "-r",
+    "--env",
+    "ci",
+    ...scopeOptions[scope],
+    "--reporter-junit",
+    resultPath,
+  ],
   { cwd: collectionPath, stdio: "inherit" }
 );
 

@@ -12,7 +12,8 @@
     "test:integration:full": "node scripts/run-integration.js full",
     "test:integration:known-defects": "node scripts/run-integration.js known-defects",
     "start": "nodemon src/server.js",
-    "deploy": "serverless deploy"
+    "deploy:test": "serverless deploy --stage test",
+    "deploy:prd": "serverless deploy --stage prd"
   },
   "keywords": [],
   "author": "",

@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
 
 const {
   EntraAuthenticationError,
@@ -134,6 +135,26 @@ test("token without an expiry is rejected", async () => {
   await assert.rejects(
     () => verifyToken("token"),
     (error) => error instanceof EntraAuthenticationError,
+  );
+});
+
+test("loads jose dynamically when require esm is disabled", () => {
+  const script = `
+    const { createEntraTokenVerifier, EntraAuthenticationError } = require("./src/authentication/entraTokenVerifier");
+    const verifyToken = createEntraTokenVerifier(${JSON.stringify(verifierConfig)});
+    verifyToken("not-a-jwt").then(
+      () => process.exitCode = 1,
+      (error) => {
+        if (!(error instanceof EntraAuthenticationError)) process.exitCode = 1;
+      },
+    );
+  `;
+
+  assert.doesNotThrow(() =>
+    execFileSync(process.execPath, ["--no-experimental-require-module", "-e", script], {
+      cwd: require("node:process").cwd(),
+      stdio: "pipe",
+    }),
   );
 });
 

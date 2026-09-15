@@ -57,16 +57,19 @@ const hasRequiredScope = (scopeClaim, requiredScope) => {
 const isTokenValidationError = (error) =>
   Boolean(error && TOKEN_VALIDATION_ERROR_CODES.has(error.code));
 
+const loadJose = (dependencies) =>
+  dependencies.jose ? Promise.resolve(dependencies.jose) : import("jose");
+
 const createEntraTokenVerifier = (
   { issuer, audience, requiredScope, jwksUri },
   dependencies = {},
 ) => {
   assertRequiredConfiguration({ issuer, audience, requiredScope, jwksUri });
 
-  // jose v6 is ESM-first, but Node.js 24 supports require(esm) from CommonJS.
-  // Keeping this require lazy avoids loading the verifier unless Entra auth is used.
-  const jose = dependencies.jose || require("jose");
-  const keySet = jose.createRemoteJWKSet(new URL(jwksUri));
+  const josePromise = loadJose(dependencies);
+  const keySetPromise = josePromise.then((jose) =>
+    jose.createRemoteJWKSet(new URL(jwksUri)),
+  );
 
   return async (token) => {
     if (typeof token !== "string" || token.trim() === "") {
@@ -76,6 +79,7 @@ const createEntraTokenVerifier = (
     let payload;
 
     try {
+      const [jose, keySet] = await Promise.all([josePromise, keySetPromise]);
       ({ payload } = await jose.jwtVerify(token, keySet, {
         issuer,
         audience,

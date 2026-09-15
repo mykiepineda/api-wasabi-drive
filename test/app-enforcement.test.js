@@ -51,6 +51,24 @@ const restoreEnvironment = () => {
   clearRouterModules();
 };
 
+const requestStatus = (app, path) =>
+  new Promise((resolve, reject) => {
+    const server = app.listen(0, () => {
+      const request = require("node:http").get(
+        `http://127.0.0.1:${server.address().port}${path}`,
+        (response) => {
+          response.resume();
+          response.on("end", () => {
+            server.close();
+            resolve(response.statusCode);
+          });
+        },
+      );
+      request.on("error", reject);
+    });
+    server.on("error", reject);
+  });
+
 test.after(restoreEnvironment);
 
 test("Entra enforcement defaults to disabled", () => {
@@ -67,6 +85,16 @@ test("explicit false keeps Entra enforcement disabled", () => {
   clearApplicationModules();
 
   assert.equal(require(configPath).entra.authEnabled, false);
+});
+
+test("invalid Entra enforcement value fails configuration", () => {
+  process.env.ENTRA_AUTH_ENABLED = "enabled";
+  clearApplicationModules();
+
+  assert.throws(
+    () => require(configPath),
+    /Invalid ENTRA_AUTH_ENABLED value/,
+  );
 });
 
 test("explicit true enables Entra enforcement", () => {
@@ -94,26 +122,38 @@ test("enabled enforcement rejects an unauthenticated bucket request before stora
   });
 
   const app = require(appPath);
-  const response = await new Promise((resolve, reject) => {
-    const server = app.listen(0, () => {
-      const request = require("node:http").get(
-        `http://127.0.0.1:${server.address().port}/buckets`,
-        (result) => {
-          result.resume();
-          result.on("end", () => {
-            server.close();
-            resolve(result.statusCode);
-          });
-        },
-      );
-      request.on("error", reject);
-    });
-    server.on("error", reject);
-  });
+  const response = await requestStatus(app, "/buckets");
 
   assert.equal(response, 401);
   assert.equal(storageCalled, false);
 });
+
+for (const [name, environmentValue] of [
+  ["absent", undefined],
+  ["false", "false"],
+]) {
+  test(`disabled enforcement (${name}) allows an unauthenticated bucket request`, async () => {
+    if (environmentValue === undefined) {
+      delete process.env.ENTRA_AUTH_ENABLED;
+    } else {
+      process.env.ENTRA_AUTH_ENABLED = environmentValue;
+    }
+    clearApplicationModules();
+    clearRouterModules();
+
+    const bucketRouter = installRouterStubs();
+    let storageCalled = false;
+    bucketRouter.get("/", (req, res) => {
+      storageCalled = true;
+      res.json({ buckets: [] });
+    });
+
+    const response = await requestStatus(require(appPath), "/buckets");
+
+    assert.equal(response, 200);
+    assert.equal(storageCalled, true);
+  });
+}
 
 test("enabled enforcement fails closed when verifier configuration is missing", () => {
   assert.throws(

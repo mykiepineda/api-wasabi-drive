@@ -2,9 +2,27 @@ const dotenv = require("dotenv");
 
 dotenv.config();
 
+const parseEntraAuthEnabled = (value) => {
+  if (value === undefined) {
+    return false;
+  }
+
+  const normalizedValue = value.trim().toLowerCase();
+  if (normalizedValue === "true") {
+    return true;
+  }
+
+  if (normalizedValue === "false") {
+    return false;
+  }
+
+  throw new Error(
+    'Invalid ENTRA_AUTH_ENABLED value. Expected "true" or "false".',
+  );
+};
+
 const entraTenantId = process.env.ENTRA_TENANT_ID?.trim();
-const entraAuthEnabled =
-  process.env.ENTRA_AUTH_ENABLED?.trim().toLowerCase() === "true";
+const entraAuthEnabled = parseEntraAuthEnabled(process.env.ENTRA_AUTH_ENABLED);
 
 const config = {
   port: process.env.PORT || 8080,

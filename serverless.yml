@@ -3,7 +3,7 @@ frameworkVersion: "4"
 provider:
   name: aws
   runtime: nodejs24.x
-  stage: prd
+  stage: ${opt:stage}
   region: ap-southeast-2
   endpointType: regional
 functions:

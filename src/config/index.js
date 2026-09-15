@@ -3,6 +3,8 @@ const dotenv = require("dotenv");
 dotenv.config();
 
 const entraTenantId = process.env.ENTRA_TENANT_ID?.trim();
+const entraAuthEnabled =
+  process.env.ENTRA_AUTH_ENABLED?.trim().toLowerCase() === "true";
 
 const config = {
   port: process.env.PORT || 8080,
@@ -12,6 +14,7 @@ const config = {
     secretAccessKey: process.env.WASABI_SECRET_ACCESS_KEY,
   },
   entra: {
+    authEnabled: entraAuthEnabled,
     tenantId: entraTenantId,
     apiClientId: process.env.ENTRA_API_CLIENT_ID?.trim(),
     requiredScope: process.env.ENTRA_REQUIRED_SCOPE?.trim(),

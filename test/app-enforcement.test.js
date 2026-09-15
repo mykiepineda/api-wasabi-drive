@@ -99,6 +99,8 @@ test("invalid Entra enforcement value fails configuration", () => {
 
 test("explicit true enables Entra enforcement", () => {
   process.env.ENTRA_AUTH_ENABLED = "true";
+  process.env.ENTRA_TRUSTED_USER_OBJECT_IDS =
+    "11111111-2222-4222-8aaa-555555666666";
   clearApplicationModules();
 
   assert.equal(require(configPath).entra.authEnabled, true);
@@ -110,6 +112,7 @@ test("enabled enforcement rejects an unauthenticated bucket request before stora
     ENTRA_TENANT_ID: "tenant-id",
     ENTRA_API_CLIENT_ID: "api-client-id",
     ENTRA_REQUIRED_SCOPE: "WasabiDrive.Access",
+    ENTRA_TRUSTED_USER_OBJECT_IDS: "11111111-2222-4222-8aaa-555555666666",
   });
   clearApplicationModules();
   clearRouterModules();
@@ -160,7 +163,7 @@ test("enabled enforcement fails closed when verifier configuration is missing", 
     () =>
       execFileSync(process.execPath, [
         "-e",
-        "process.env.ENTRA_AUTH_ENABLED = 'true'; delete process.env.ENTRA_TENANT_ID; delete process.env.ENTRA_API_CLIENT_ID; delete process.env.ENTRA_REQUIRED_SCOPE; require('./src/app');",
+        "process.env.ENTRA_AUTH_ENABLED = 'true'; process.env.ENTRA_TRUSTED_USER_OBJECT_IDS = '11111111-2222-4222-8aaa-555555666666'; delete process.env.ENTRA_TENANT_ID; delete process.env.ENTRA_API_CLIENT_ID; delete process.env.ENTRA_REQUIRED_SCOPE; require('./src/app');",
       ], {
         cwd: require("node:process").cwd(),
         encoding: "utf8",

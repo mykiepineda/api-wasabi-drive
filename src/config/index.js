@@ -2,7 +2,27 @@ const dotenv = require("dotenv");
 
 dotenv.config();
 
+const parseEntraAuthEnabled = (value) => {
+  if (value === undefined) {
+    return false;
+  }
+
+  const normalizedValue = value.trim().toLowerCase();
+  if (normalizedValue === "true") {
+    return true;
+  }
+
+  if (normalizedValue === "false") {
+    return false;
+  }
+
+  throw new Error(
+    'Invalid ENTRA_AUTH_ENABLED value. Expected "true" or "false".',
+  );
+};
+
 const entraTenantId = process.env.ENTRA_TENANT_ID?.trim();
+const entraAuthEnabled = parseEntraAuthEnabled(process.env.ENTRA_AUTH_ENABLED);
 
 const config = {
   port: process.env.PORT || 8080,
@@ -12,6 +32,7 @@ const config = {
     secretAccessKey: process.env.WASABI_SECRET_ACCESS_KEY,
   },
   entra: {
+    authEnabled: entraAuthEnabled,
     tenantId: entraTenantId,
     apiClientId: process.env.ENTRA_API_CLIENT_ID?.trim(),
     requiredScope: process.env.ENTRA_REQUIRED_SCOPE?.trim(),

@@ -22,7 +22,9 @@ const bucketMiddleware = config.entra.authEnabled
     ]
   : [];
 app.use("/buckets", ...bucketMiddleware, require("./api/buckets"));
-app.use("/auth", require("./api/auth"));
+if (!config.entra.authEnabled) {
+  app.use("/auth", require("./api/auth"));
+}
 
 module.exports = app;
 module.exports.handler = serverless(app);

@@ -36,7 +36,7 @@ const installRouterStubs = () => {
     exports: authRouter,
   };
 
-  return bucketRouter;
+  return { bucketRouter, authRouter };
 };
 
 const restoreEnvironment = () => {
@@ -117,7 +117,7 @@ test("enabled enforcement rejects an unauthenticated bucket request before stora
   clearApplicationModules();
   clearRouterModules();
 
-  const bucketRouter = installRouterStubs();
+  const { bucketRouter } = installRouterStubs();
   let storageCalled = false;
   bucketRouter.get("/", (req, res) => {
     storageCalled = true;
@@ -144,19 +144,49 @@ for (const [name, environmentValue] of [
     clearApplicationModules();
     clearRouterModules();
 
-    const bucketRouter = installRouterStubs();
+    const { bucketRouter, authRouter } = installRouterStubs();
     let storageCalled = false;
     bucketRouter.get("/", (req, res) => {
       storageCalled = true;
       res.json({ buckets: [] });
     });
+    authRouter.get("/probe", (req, res) => {
+      res.sendStatus(204);
+    });
 
-    const response = await requestStatus(require(appPath), "/buckets");
+    const app = require(appPath);
+    const bucketResponse = await requestStatus(app, "/buckets");
+    const authResponse = await requestStatus(app, "/auth/probe");
 
-    assert.equal(response, 200);
+    assert.equal(bucketResponse, 200);
     assert.equal(storageCalled, true);
+    assert.equal(authResponse, 204);
   });
 }
+
+test("enabled enforcement does not mount the legacy auth router", async () => {
+  Object.assign(process.env, {
+    ENTRA_AUTH_ENABLED: "true",
+    ENTRA_TENANT_ID: "tenant-id",
+    ENTRA_API_CLIENT_ID: "api-client-id",
+    ENTRA_REQUIRED_SCOPE: "WasabiDrive.Access",
+    ENTRA_TRUSTED_USER_OBJECT_IDS: "11111111-2222-4222-8aaa-555555666666",
+  });
+  clearApplicationModules();
+  clearRouterModules();
+
+  const { authRouter } = installRouterStubs();
+  let legacyAuthCalled = false;
+  authRouter.get("/probe", (req, res) => {
+    legacyAuthCalled = true;
+    res.sendStatus(204);
+  });
+
+  const response = await requestStatus(require(appPath), "/auth/probe");
+
+  assert.equal(response, 404);
+  assert.equal(legacyAuthCalled, false);
+});
 
 test("enabled enforcement fails closed when verifier configuration is missing", () => {
   assert.throws(

@@ -21,11 +21,12 @@ To obtain a short-lived token with an existing interactive Azure CLI login, set 
 $env:ENTRA_TENANT_ID = "<tenant-id>"
 $env:ENTRA_API_CLIENT_ID = "<API client ID>"
 $env:ENTRA_REQUIRED_SCOPE = "<scope-name>"
+$env:ENTRA_API_IDENTIFIER_URI = "<Application ID URI>"
 az login --tenant $env:ENTRA_TENANT_ID
 . .\scripts\get-integration-token.ps1
 ```
 
-The helper sets `INTEGRATION_ACCESS_TOKEN` in the current PowerShell process without printing or persisting its value. It does not automate username/password authentication or use a client secret.
+`ENTRA_API_IDENTIFIER_URI` must match the API app registration's **Application ID URI** in Entra, for example `api://<API-client-ID>` or a custom URI. If it is omitted, the helper uses `api://<API-client-ID>`. The helper sets `INTEGRATION_ACCESS_TOKEN` in the current PowerShell process without printing or persisting its value. It does not automate username/password authentication or use a client secret.
 
 ## Full coverage
 

@@ -1,46 +1,28 @@
 # Wasabi Drive API - Copilot Instructions
 
-## Project status and current goal
+## Project status
 
-Wasabi Drive API is an existing production-working Node.js/Express API for
-browsing files stored in Wasabi Cloud Storage.
+Wasabi Drive API is an existing production-working Node.js/Express API for browsing files stored in Wasabi Cloud Storage.
 
-The structural refactor, production deployment baseline, Microsoft Entra
-authentication implementation, and trusted-user authorization implementation are
-complete.
-
-The current phase is **pre-production identity-cutover hardening**.
+The structural refactor and the pre-production Microsoft Entra identity migration are complete in source.
 
 Verified in AWS `test`:
-
-- the React SPA signs in with Microsoft Entra through MSAL;
-- the SPA sends a real OAuth 2.0 access token for the Wasabi Drive API;
-- API Gateway passes protected requests to Lambda/Express without requiring an
-  API key as user authentication;
-- missing bearer token -> `401`;
-- invalid bearer token -> `401`;
-- valid token from the trusted Entra user -> existing bucket/folder/object
-  behavior succeeds;
-- valid authenticated user whose `oid` is not in the trusted-user allow-list ->
-  `403`;
-- trusted-user authorization is therefore proven end-to-end in AWS `test`.
+- React/MSAL signs in through Microsoft Entra.
+- The SPA sends a real OAuth 2.0 access token for the Wasabi Drive API.
+- API Gateway passes requests without treating an API key as user authentication.
+- Missing bearer token -> `401`.
+- Invalid bearer token -> `401`.
+- Valid token without required API scope -> `403`.
+- Valid trusted Entra user -> normal bucket/folder/object behavior succeeds.
+- Valid authenticated but untrusted Entra user -> `403`.
+- Malformed trusted-user configuration fails closed.
+- Legacy `/auth` is not mounted while Entra enforcement is enabled.
 
 Production has not yet been cut over to Entra enforcement.
 
-The immediate backend work is limited to pre-production hardening that preserves
-compatibility and rollback:
+The current backend objective is NOT further application refactoring. The immediate task before production cutover is to align the Bruno integration regression with the now-protected Entra API, then perform controlled production deployment and verification.
 
-1. isolate local `.env` loading from the general configuration boundary so unit
-   tests control `process.env` deterministically;
-2. stop exposing the legacy `/auth` router when Entra enforcement is enabled,
-   while preserving it when enforcement is disabled for temporary production
-   compatibility and rollback.
-
-Do not broaden these tasks into legacy-auth redesign, MongoDB cleanup, CORS
-hardening, API Gateway migration, Kong adoption, or dependency modernization.
-
-The developer is the technical owner and architectural decision-maker. Copilot
-assists implementation; it does not independently redesign the system.
+The developer is the technical owner and architectural decision-maker. Copilot assists implementation and does not independently redesign the system.
 
 ## Branch and repository safety
 
@@ -48,39 +30,26 @@ assists implementation; it does not independently redesign the system.
 
 Never commit implementation changes directly to `master`.
 
-The developer creates the branch manually before using Copilot Chat. Work only
-in the current workspace and current branch. Do not create another branch or
-worktree unless explicitly instructed.
-
-Keep branches focused, for example:
-
-- `fix/isolate-local-dotenv-loading`;
-- `fix/disable-legacy-auth-when-entra-enabled`;
-- later cleanup branches only when explicitly requested.
+The developer creates focused branches manually and uses Copilot Chat in the normal workspace. Work only in the current workspace and current branch. Do not create another branch or worktree unless explicitly instructed.
 
 Do not modify this instruction file unless the task explicitly authorizes it.
 
-Do not automatically continue to another modernization task after completing
-an approved task.
+Do not automatically continue to another modernization task after completing the requested work.
+
+Keep commits focused and reviewable. Avoid unrelated cleanup.
 
 ## Current architecture
 
 Preserve these established boundaries:
-
-- `src/server.js` owns local HTTP startup;
-- `src/app.js` constructs the Express application and Lambda handler;
-- `src/config` interprets application configuration;
-- `src/authentication/entraTokenVerifier.js` validates Entra access tokens;
-- `src/authentication/requireEntraAccessToken.js` is the authentication
-  middleware boundary;
-- `src/authentication/requireTrustedUser.js` is the application-authorization
-  middleware boundary;
-- bucket flow is:
-  `src/api/buckets.js` -> `src/service/buckets.js` -> `src/storage/wasabi.js` ->
-  AWS SDK -> Wasabi.
+- `src/server.js` owns local HTTP startup and local `.env` loading.
+- `src/app.js` constructs the Express application and Lambda handler.
+- `src/config` parses and validates values already present in `process.env`.
+- `src/authentication/entraTokenVerifier.js` validates Entra access tokens.
+- `src/authentication/requireEntraAccessToken.js` is the authentication boundary.
+- `src/authentication/requireTrustedUser.js` is the application-authorization boundary.
+- Bucket flow is `src/api/buckets.js` -> `src/service/buckets.js` -> `src/storage/wasabi.js` -> AWS SDK -> Wasabi.
 
 Current runtime/deployment stack:
-
 - Node.js 24;
 - CommonJS;
 - Express 4.22.x;
@@ -90,8 +59,7 @@ Current runtime/deployment stack:
 - `serverless-http`;
 - Wasabi S3-compatible storage.
 
-Do not migrate Express 5, ESM, TypeScript, API Gateway HTTP API, Terraform, CDK,
-Kong, or another deployment framework unless explicitly requested.
+Do not migrate Express 5, ESM, TypeScript, API Gateway HTTP API, Terraform, CDK, Kong, or another deployment framework unless explicitly requested.
 
 ## Authentication and authorization
 
@@ -105,293 +73,218 @@ React/MSAL
 -> application authorization
 -> Wasabi.
 
-Authentication and authorization are separate:
+Authentication establishes that the bearer token is valid for this API.
 
-- authentication establishes that the bearer token is valid for this API;
-- authorization establishes that the authenticated Entra principal is trusted
-  to use Wasabi Drive.
+Authorization separately establishes that the authenticated Entra principal is trusted to use Wasabi Drive.
 
-The token verifier currently validates:
-
+The token verifier validates:
 - signature;
 - tenant-specific issuer;
-- audience;
+- API audience;
 - expiry;
 - required delegated scope;
 - explicitly allowed signing algorithm.
 
-The verifier loads `jose` through cached dynamic `import()` for AWS Lambda
-Node.js 24 compatibility. Do not reintroduce runtime `require("jose")`.
+The verifier uses dynamic `import("jose")` for AWS Lambda Node.js 24 compatibility. Do not reintroduce runtime `require("jose")`.
 
-The trusted-user boundary consumes verified `req.auth` claims and checks the
-expected tenant plus a configured allow-list of Entra user Object IDs (`oid`).
+The trusted-user boundary consumes verified `req.auth` claims and checks the expected tenant plus the configured Entra user Object ID (`oid`) allow-list.
 
-Use correct HTTP semantics:
-
+Use:
 - missing/invalid authentication -> `401`;
-- authenticated but not application-authorized -> `403`.
+- authenticated but not authorized -> `403`.
 
-Do not decode the bearer token again in authorization middleware.
+Do not decode the token again in authorization middleware.
 
-Do not use email address, username, display name, frontend state, or the legacy
-API key as application authorization.
+Do not use email address, username, frontend state, or API keys as application authorization.
 
-## Current Entra configuration
+## Configuration
 
-Current configuration names:
-
+Current Entra variables:
 - `ENTRA_AUTH_ENABLED`;
 - `ENTRA_TENANT_ID`;
 - `ENTRA_API_CLIENT_ID`;
 - `ENTRA_REQUIRED_SCOPE`;
 - `ENTRA_TRUSTED_USER_OBJECT_IDS`.
 
-`ENTRA_AUTH_ENABLED` semantics must remain strict:
-
+`ENTRA_AUTH_ENABLED` remains strict:
 - absent -> disabled;
 - `"false"` -> disabled;
 - `"true"` -> enabled;
 - any other explicit value -> configuration error.
 
 When Entra enforcement is enabled:
-
 - `/buckets` requires valid Entra authentication;
-- `/buckets` then requires trusted-user authorization;
-- missing/invalid trusted-user authorization configuration fails closed.
+- trusted-user authorization is then required;
+- missing/invalid required auth configuration fails closed;
+- `/auth` is not mounted.
 
-When Entra enforcement is disabled, compatibility behavior must remain usable
-until production cutover is complete.
+When Entra enforcement is disabled:
+- `/buckets` preserves temporary compatibility behavior;
+- legacy `/auth` remains mounted for rollback compatibility until production cutover is proven.
 
-Real Object IDs, tokens, credentials, passwords, API keys, and secrets must not
-be committed.
+Real Object IDs, tokens, passwords, API keys, AWS credentials, Wasabi credentials, MongoDB credentials, and other secrets must not be committed.
 
-## Local dotenv and configuration boundary
+## Local dotenv behavior
 
-The current code still calls `dotenv.config()` inside `src/config/index.js`.
-That is a known pre-production issue because unit tests deliberately manipulate
-`process.env`, and requiring the config module can repopulate deleted values
-from a developer's local `.env` file.
+The dotenv/test-isolation fix is complete.
 
-Approved correction:
+`src/server.js` loads local `.env` before requiring the application/configuration modules.
 
-- `src/config` should parse/validate values already present in `process.env`;
-- `src/server.js` should load local `.env` before requiring application/config
-  modules;
-- unit tests should control their own process environment without being
-  silently repopulated from `.env`;
-- Serverless v4 remains responsible for stage-specific dotenv behavior during
-  deployment;
-- AWS Lambda runtime configuration comes from Lambda environment variables.
+`src/config` must not call `dotenv.config()` or load `.env`, `.env.test`, or `.env.prd`.
 
-Do not introduce stage-selection magic into application code.
+Unit tests control `process.env`.
 
-Do not make `src/config` load `.env.test` or `.env.prd` directly.
+Serverless Framework v4 handles stage-specific dotenv loading for `.env.test` and `.env.prd` during deployment.
 
-## Legacy `/auth` compatibility containment
+Do not reintroduce dotenv loading into `src/config`.
 
-The legacy MongoDB/bcrypt/UUID authentication path is scheduled for removal,
-but production has not yet completed the Entra cutover.
+## Legacy authentication
 
-Current legacy endpoints under `/auth` include user-management and password
-validation behavior. They must not remain publicly mounted once Entra is the
-active security boundary.
+Legacy MongoDB/bcrypt/UUID authentication remains physically present only for temporary rollback compatibility while production Entra cutover is incomplete.
 
-Approved temporary containment behavior:
+When `ENTRA_AUTH_ENABLED=true`, `/auth` is intentionally not mounted.
 
-- when `ENTRA_AUTH_ENABLED=false`, keep `/auth` mounted for migration
-  compatibility and rollback;
-- when `ENTRA_AUTH_ENABLED=true`, do not mount the legacy `/auth` router;
-- requests to `/auth/...` in the Entra-enabled state should therefore receive
-  normal not-found behavior rather than being routed to legacy MongoDB auth;
-- do not spend effort adding Entra authorization to endpoints that are planned
-  for deletion.
+Do not improve the legacy auth architecture.
 
-Do not remove MongoDB, bcrypt, UUID, or the legacy auth implementation in the
-same containment PR. Their physical removal is a later cleanup after successful
-production Entra cutover.
+Do not remove MongoDB/bcrypt/UUID in the pre-cutover integration-test task.
+
+After successful production Entra cutover, remove legacy `/auth`, MongoDB, bcrypt, UUID, related environment values, related dependencies, and obsolete Bruno legacy-auth requests if no other persistence requirement exists.
+
+Do not add a replacement database without a real business persistence requirement.
 
 ## API Gateway and API key
 
-The rebuilt AWS `test` stack no longer requires an API key on `/{proxy+}`.
 API Gateway API keys are not user authentication.
 
-The frontend may still send the transitional `X-Api-Key` header until the
-production compatibility path is verified and any production usage-plan/drift
-questions are resolved.
+The clean `test` stack does not require an API key for protected proxy methods.
 
-Do not reintroduce `private: true` or API-key-required methods during these
-hardening tasks.
+The frontend still sends transitional `X-Api-Key` during production compatibility rollout.
 
-Before production cutover, run CloudFormation drift detection against the
-production stack. Do not delete/recreate production as a routine cutover step.
+Do not reintroduce `private: true` or API-key-required methods as part of identity work.
+
+Before production backend cutover, inspect CloudFormation drift for the production stack. Do not delete/recreate production as a routine cutover step.
+
+Removal of `X-Api-Key` and any API Gateway usage-plan/API-key cleanup are separate post-cutover tasks.
 
 ## CORS
 
-CORS means Cross-Origin Resource Sharing. It controls which browser origins may
-read cross-origin responses; it is not authentication or authorization.
+CORS means Cross-Origin Resource Sharing. It is a browser cross-origin policy, not authentication or authorization.
 
-Current broad CORS behavior remains transitional during the identity cutover.
-Do not tighten CORS in the dotenv-isolation or legacy-auth-containment tasks.
+Current broad CORS behavior remains transitional during cutover.
 
-CORS hardening should be a later, separately tested change after production
-identity cutover is stable.
+Do not tighten CORS during the Bruno integration-test alignment or production identity cutover unless explicitly scoped.
 
-## Stage-specific environment and deployment
+Post-cutover CORS hardening should allow only required frontend origins and headers after the production identity path is stable.
 
-Serverless Framework v4 uses native stage-specific dotenv loading.
+## Testing
 
-Local deployment files:
-
-- `.env.test`;
-- `.env.prd`.
-
-They are untracked.
-
-Explicit deployment scripts:
-
-- `npm run deploy:test`;
-- `npm run deploy:prd`.
-
-Do not reintroduce a generic deployment command that can silently target
-production.
-
-Shell/process environment values may override `.env.<stage>` values.
-
-AWS deployment credentials do not belong in application dotenv files.
-
-## Testing gates
-
-Backend regression gate:
-
+Standard unit regression:
 `npm test`
 
-Use Node.js 24, matching `package.json` engines.
+Use Node.js 24 for authoritative backend test results.
 
-For each task:
+Do not delete, skip, or weaken tests merely to make changes pass.
 
-1. run `npm ci` if dependencies are not already in a trustworthy state;
-2. run the baseline test suite before the change where practical;
-3. implement the smallest scoped change;
-4. run `npm test` again;
-5. run `git diff --check`;
-6. inspect the complete diff.
+Preserve coverage around:
+- Entra enforcement flag behavior;
+- token signature/issuer/audience/expiry/scope validation;
+- `401` versus `403`;
+- Lambda-compatible `jose` loading;
+- trusted-user `oid`/tenant authorization;
+- fail-closed trusted-user configuration;
+- `/auth` mounted only when Entra enforcement is disabled.
 
-Do not weaken or skip tests merely to make a change pass.
-
-For local dotenv isolation, tests must prove that a developer `.env` containing
-`ENTRA_AUTH_ENABLED=true` cannot silently change tests intended to exercise an
-absent/disabled environment.
-
-For legacy `/auth` containment, add application-level coverage proving:
-
-- Entra disabled -> legacy `/auth` remains mounted;
-- Entra enabled -> legacy `/auth` is not mounted;
-- protected `/buckets` behavior remains unchanged;
-- authentication executes before trusted-user authorization.
-
-Do not make tests call live Microsoft Entra, JWKS, AWS, MongoDB, or Wasabi.
-
-The safe Bruno integration regression is normally:
-
+The safe Bruno integration regression command is:
 `npm run test:integration`
 
-Keep production-target guards intact. Do not commit bearer tokens.
+The current Bruno collection was created before Entra enforcement and must be aligned before production:
+- protected bucket requests must support a runtime-provided Entra access token;
+- no bearer token may be committed;
+- test reports must continue skipping headers and bodies;
+- production-target guards must remain intact;
+- legacy `/auth` requests must not remain part of the normal protected `test` regression when `/auth` is intentionally unmounted.
+
+Do not build automated username/password handling for Microsoft Entra merely to obtain a test token.
+
+A short-lived access token may be supplied at runtime through an environment variable for the manual pre-production regression workflow.
+
+Do not persist or log that token.
 
 ## Deployment safety
 
-Do not deploy unless the task explicitly authorizes deployment.
+Do not deploy unless explicitly requested.
 
-For material backend changes, use `test` before `prd`.
+Use `test` before `prd`.
 
-The current production backend is not yet considered cut over to Entra solely
-because the test stage is proven.
+The application-refactoring phase is complete. The intended cutover sequence is:
+1. align and pass the protected Bruno regression in `test`;
+2. run local backend unit tests and frontend test/build gates;
+3. run production CloudFormation drift detection and review any drift;
+4. verify production frontend build-time configuration;
+5. deploy the Entra-enabled frontend to Firebase while production backend Entra enforcement remains disabled;
+6. verify production frontend compatibility;
+7. enable Entra authentication + trusted-user authorization in `.env.prd`;
+8. deploy backend `prd`;
+9. verify trusted production access, `401` behavior, and `/auth` not-found behavior;
+10. retain rollback by setting `ENTRA_AUTH_ENABLED=false` and redeploying until the cutover is considered stable.
 
-Pre-production sequence is:
+Do not deliberately configure an untrusted Object ID in production merely to retest `403`; that behavior is already proven in `test`.
 
-- complete backend hardening;
-- deploy/validate backend hardening in `test`;
-- complete frontend authentication/error-handling hardening;
-- verify the production frontend build configuration;
-- run production CloudFormation drift detection;
-- then plan the controlled production rollout.
+## Stage-specific deployment
 
-Keep a rollback path based on `ENTRA_AUTH_ENABLED=false` until production Entra
-behavior is proven.
+Untracked local backend deployment files:
+- `.env.test`;
+- `.env.prd`.
 
-## Legacy MongoDB authentication freeze
+Explicit scripts:
+- `npm run deploy:test`;
+- `npm run deploy:prd`.
 
-Do not improve the legacy MongoDB/password/UUID architecture.
+Do not add a generic deploy command that can silently target production.
 
-Do not opportunistically fix:
+Shell/process environment variables may override stage dotenv values.
 
-- MongoDB user CRUD;
-- UUID token semantics;
-- password account-management behavior;
-- refresh behavior;
-- MongoDB connection architecture.
+AWS deployment credentials belong to the AWS credential provider chain/profile, not application dotenv files.
 
-Only change the legacy path to contain an immediate exposure or preserve
-cutover compatibility.
+## Current known deferred work
 
-After successful production Entra cutover, remove the legacy `/auth` code,
-bcrypt, UUID authentication, and MongoDB if no remaining business persistence
-requirement exists.
+Do not opportunistically implement before production cutover:
+- legacy MongoDB/bcrypt/UUID physical removal;
+- `X-Api-Key` removal;
+- API Gateway usage-plan cleanup;
+- CORS hardening;
+- AWS SDK v2 -> v3 migration;
+- bucket pagination/performance changes;
+- API Gateway REST -> HTTP API migration;
+- Kong;
+- CI/CD;
+- broad dependency modernization.
 
-Do not add a replacement database without a real persistence requirement.
-
-## Known deferred technical debt
-
-Do not opportunistically fix these during current pre-production hardening:
-
-- Wasabi total-key pagination loses `Prefix` on subsequent pages;
-- total-key counting performs expensive full pagination scans;
-- AWS SDK for JavaScript v2 is end-of-support;
-- route-local error handling is inconsistent;
-- request validation is limited;
-- observability is minimal;
-- API Gateway REST -> HTTP API may later be evaluated;
-- Kong may later be evaluated as a learning/architecture spike;
-- CI/CD is not yet automated;
-- broad CORS is transitional;
-- browser-visible `X-Api-Key` remains transitional compatibility debt.
-
-The trusted-user Object-ID parser currently accepts standard UUID-version-style
-GUIDs. Do not change that parser during unrelated hardening unless a real Entra
-identifier is rejected or a separately approved robustness task requires it.
+The frontend currently opens Wasabi object URLs directly. Whether object content itself must be protected by Entra is an explicit architecture/security requirement decision, not something to silently redesign during cutover.
 
 ## Future CI/CD
 
 CI/CD is not yet implemented.
 
-Future direction is likely GitHub Actions with branch protection, automated
-unit/build checks, test deployment, integration checks, controlled production
-approval, and GitHub OIDC for short-lived AWS credentials.
+Future direction is likely GitHub Actions with protected branches, automated unit/build checks, test deployment, integration regression, controlled production approval, and GitHub OIDC for short-lived AWS credentials.
+
+OIDC means OpenID Connect.
 
 Do not implement CI/CD unless explicitly requested.
 
-## Dependency discipline
-
-Do not run broad dependency upgrades.
-
-Do not run `npm audit fix` or `npm audit fix --force` as incidental cleanup.
-
-No new runtime dependency is expected for the current hardening tasks.
-
 ## Completion report
 
-For each implementation task report:
-
+For every Copilot task report:
 - current branch;
 - commits created;
 - files changed;
-- configuration changed;
-- behavior intentionally changed;
-- baseline/final `npm test` result;
-- `git diff --check` result;
-- integration-test result when applicable;
+- behavior/configuration changed;
+- baseline/final tests;
+- `git diff --check`;
+- integration result when applicable;
 - deployment performed, if explicitly authorized;
-- confirmation that unrelated architecture was not changed;
+- confirmation no secret/token was committed;
 - remaining issue directly relevant to the task;
 - recommended next task.
 
-Stop when the requested task is complete.
+Stop after the requested task.

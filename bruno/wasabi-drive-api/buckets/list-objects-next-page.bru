@@ -13,6 +13,10 @@ get {
   auth: none
 }
 
+headers {
+  Authorization: Bearer {{accessToken}}
+}
+
 query {
   MaxKeys: 25
   ContinuationToken: {{continuationToken}}

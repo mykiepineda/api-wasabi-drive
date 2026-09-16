@@ -13,6 +13,10 @@ get {
   auth: none
 }
 
+headers {
+  Authorization: Bearer {{accessToken}}
+}
+
 tests {
   test("returns a successful bucket list", function() {
     expect(res.status).to.equal(200);

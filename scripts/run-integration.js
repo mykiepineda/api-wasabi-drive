@@ -1,5 +1,6 @@
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { validateIntegrationTarget } = require("./integration-target");
 
 const brunoCommand = process.execPath;
 const brunoEntryPoint = path.resolve(
@@ -31,6 +32,17 @@ if (!target || !["local", "development", "test"].includes(target)) {
   console.error(
     "Integration tests require INTEGRATION_TARGET=local, development, or test."
   );
+  process.exit(1);
+}
+
+try {
+  validateIntegrationTarget({
+    target,
+    baseUrl: process.env.BASE_URL,
+    scope,
+  });
+} catch (error) {
+  console.error(error.message);
   process.exit(1);
 }
 

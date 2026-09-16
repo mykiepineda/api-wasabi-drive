@@ -1,7 +1,3 @@
-const dotenv = require("dotenv");
-
-dotenv.config();
-
 const parseEntraAuthEnabled = (value) => {
   if (value === undefined) {
     return false;

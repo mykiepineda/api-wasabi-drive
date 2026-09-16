@@ -34,6 +34,13 @@ if (!target || !["local", "development", "test"].includes(target)) {
   process.exit(1);
 }
 
+if (target === "test" && !process.env.INTEGRATION_ACCESS_TOKEN?.trim()) {
+  console.error(
+    "Integration tests targeting test require a non-blank INTEGRATION_ACCESS_TOKEN."
+  );
+  process.exit(1);
+}
+
 if (scope !== "regression") {
   if (process.env.INTEGRATION_ALLOW_MUTATIONS !== "true") {
     console.error(

@@ -1,7 +1,8 @@
 param(
   [string]$TenantId = $env:ENTRA_TENANT_ID,
   [string]$ApiClientId = $env:ENTRA_API_CLIENT_ID,
-  [string]$RequiredScope = $env:ENTRA_REQUIRED_SCOPE
+  [string]$RequiredScope = $env:ENTRA_REQUIRED_SCOPE,
+  [string]$ApiIdentifierUri = $env:ENTRA_API_IDENTIFIER_URI
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,7 +23,11 @@ if ([string]::IsNullOrWhiteSpace($RequiredScope)) {
   throw "Provide the delegated API scope through ENTRA_REQUIRED_SCOPE or -RequiredScope."
 }
 
-$scope = "api://$ApiClientId/$RequiredScope"
+if ([string]::IsNullOrWhiteSpace($ApiIdentifierUri)) {
+  $ApiIdentifierUri = "api://$ApiClientId"
+}
+
+$scope = "$($ApiIdentifierUri.TrimEnd('/'))/$RequiredScope"
 $token = az account get-access-token `
   --tenant $TenantId `
   --scope $scope `

@@ -5,7 +5,6 @@ const { execFileSync } = require("node:child_process");
 const configPath = require.resolve("../src/config");
 const appPath = require.resolve("../src/app");
 const bucketsApiPath = require.resolve("../src/api/buckets");
-const authApiPath = require.resolve("../src/api/auth");
 const requireEntraAccessTokenPath = require.resolve(
   "../src/authentication/requireEntraAccessToken",
 );
@@ -36,27 +35,19 @@ const clearApplicationModules = () => {
 
 const clearRouterModules = () => {
   delete require.cache[bucketsApiPath];
-  delete require.cache[authApiPath];
 };
 
 const installRouterStubs = () => {
   const express = require("express");
   const bucketRouter = express.Router();
-  const authRouter = express.Router();
   require.cache[bucketsApiPath] = {
     id: bucketsApiPath,
     filename: bucketsApiPath,
     loaded: true,
     exports: bucketRouter,
   };
-  require.cache[authApiPath] = {
-    id: authApiPath,
-    filename: authApiPath,
-    loaded: true,
-    exports: authRouter,
-  };
 
-  return { bucketRouter, authRouter };
+  return { bucketRouter };
 };
 
 const installAccessTokenStub = () => {
@@ -198,17 +189,11 @@ test("legacy auth router has no application mount path", async () => {
   clearRouterModules();
   installAccessTokenStub();
 
-  const { authRouter } = installRouterStubs();
-  let legacyAuthCalled = false;
-  authRouter.get("/probe", (req, res) => {
-    legacyAuthCalled = true;
-    res.sendStatus(204);
-  });
+  installRouterStubs();
 
   const response = await requestStatus(require(appPath), "/auth/probe");
 
   assert.equal(response, 404);
-  assert.equal(legacyAuthCalled, false);
 });
 
 test("missing required Entra verifier configuration fails closed", () => {

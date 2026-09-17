@@ -43,17 +43,3 @@ test("rejects malformed and missing BASE_URL values", () => {
   assert.throws(() => validate("local", ""), /BASE_URL must be/);
   assert.throws(() => validate("local"), /BASE_URL must be/);
 });
-
-test("keeps mutation scopes on local development URLs", () => {
-  assert.doesNotThrow(() => validate("development", "http://127.0.0.1:8080", "full"));
-  assert.doesNotThrow(() => validate("local", "http://localhost:8080", "known-defects"));
-  assert.throws(
-    () =>
-      validate(
-        "test",
-        "https://abc123.execute-api.ap-southeast-2.amazonaws.com/test",
-        "full"
-      ),
-    /may target only a local development URL/
-  );
-});

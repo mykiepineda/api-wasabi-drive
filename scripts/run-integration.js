@@ -18,8 +18,6 @@ const scope = process.argv[2] ?? "regression";
 
 const scopeOptions = {
   regression: ["--tags", "regression"],
-  full: ["--exclude-tags", "known-defect"],
-  "known-defects": ["--tags", "known-defect-flow"],
 };
 
 if (!scopeOptions[scope]) {
@@ -51,15 +49,6 @@ if (target === "test" && !process.env.INTEGRATION_ACCESS_TOKEN?.trim()) {
     "Integration tests targeting test require a non-blank INTEGRATION_ACCESS_TOKEN."
   );
   process.exit(1);
-}
-
-if (scope !== "regression") {
-  if (process.env.INTEGRATION_ALLOW_MUTATIONS !== "true") {
-    console.error(
-      "Full integration tests require INTEGRATION_ALLOW_MUTATIONS=true."
-    );
-    process.exit(1);
-  }
 }
 
 const result = spawnSync(

@@ -9,8 +9,6 @@
   "scripts": {
     "test": "node --test",
     "test:integration": "node scripts/run-integration.js",
-    "test:integration:full": "node scripts/run-integration.js full",
-    "test:integration:known-defects": "node scripts/run-integration.js known-defects",
     "start": "nodemon src/server.js",
     "deploy:test": "serverless deploy --stage test",
     "deploy:prd": "serverless deploy --stage prd"
@@ -20,16 +18,13 @@
   "license": "ISC",
   "dependencies": {
     "aws-sdk": "^2.1224.0",
-    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.0.2",
     "express": "^4.22.2",
     "jose": "^6.2.12",
-    "mongodb": "^4.17.2",
     "nodemon": "^2.0.20",
     "serverless": "^4.42.0",
-    "serverless-http": "^3.0.3",
-    "uuid": "^9.0.0"
+    "serverless-http": "^3.0.3"
   },
   "devDependencies": {
     "@usebruno/cli": "^4.1.0"

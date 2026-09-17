@@ -4,44 +4,26 @@
 
 Wasabi Drive API is an existing production-working Node.js/Express API for browsing files stored in Wasabi Cloud Storage.
 
-The structural refactor and Microsoft Entra identity migration are complete and deployed to production.
+The structural refactor and Microsoft Entra identity migration are complete and deployed. Entra authentication is mandatory for protected API access; there is no supported configuration or rollback mode that disables Entra protection for `/buckets`.
 
-Verified in production and AWS `test`:
-- React/MSAL signs in through Microsoft Entra.
-- The SPA sends a real OAuth 2.0 access token for the Wasabi Drive API.
-- API Gateway passes requests without treating an API key as user authentication.
-- Missing bearer token -> `401`.
-- Invalid bearer token -> `401`.
-- Valid token without required API scope -> `403`.
-- Valid trusted Entra user -> normal bucket/folder/object behavior succeeds.
-- Valid authenticated but untrusted Entra user -> `403`.
-- Malformed trusted-user configuration fails closed.
-- Legacy `/auth` is not mounted.
-- API Gateway API keys and frontend `X-Api-Key` are no longer part of the protected request path.
+Current modernization work is Phase 4: post-Entra security closure. Keep each task narrowly scoped and do not skip ahead unless explicitly requested.
 
-Entra authentication is mandatory for the Wasabi Drive API. There is no supported configuration or rollback mode that disables Entra protection for `/buckets`.
-
-The current modernization phase is post-Entra security closure. Keep each task narrowly scoped and do not skip ahead to later cleanup/storage tasks unless explicitly requested.
-
-The developer is the technical owner and architectural decision-maker. Copilot assists implementation and does not independently redesign the system.
+The developer is the technical owner and architectural decision-maker. Copilot assists implementation and must not independently redesign the system.
 
 ## Branch and repository safety
 
-`master` is the protected integration/release branch.
-
-Never commit implementation changes directly to `master`.
-
-The developer creates focused branches manually and uses Copilot Chat in the normal workspace. Work only in the current workspace and current branch. Do not create another branch or worktree unless explicitly instructed.
-
-Do not modify this instruction file unless the task explicitly authorizes it.
-
-Do not automatically continue to another modernization task after completing the requested work.
-
-Keep commits focused and reviewable. Avoid unrelated cleanup.
+- `master` is the protected integration/release branch.
+- Never commit implementation changes directly to `master`.
+- Work only in the current workspace and current branch. Do not create branches or worktrees unless explicitly instructed.
+- Do not modify this instruction file unless the task explicitly authorizes it.
+- Keep commits focused and reviewable.
+- Avoid unrelated cleanup.
+- Stop after the requested task; do not automatically continue to the next modernization task.
 
 ## Current architecture
 
-Preserve these established boundaries:
+Preserve these boundaries:
+
 - `src/server.js` owns local HTTP startup and local `.env` loading.
 - `src/app.js` constructs the Express application and Lambda handler.
 - `src/config` parses and validates values already present in `process.env`.
@@ -51,6 +33,7 @@ Preserve these established boundaries:
 - Bucket flow is `src/api/buckets.js` -> `src/service/buckets.js` -> `src/storage/wasabi.js` -> AWS SDK -> Wasabi.
 
 Current runtime/deployment stack:
+
 - Node.js 24;
 - CommonJS;
 - Express 4.22.x;
@@ -74,191 +57,173 @@ React/MSAL
 -> application authorization
 -> Wasabi.
 
-Authentication establishes that the bearer token is valid for this API.
+Authentication establishes that the bearer access token is valid for this API. Authorization separately establishes that the authenticated Entra principal is trusted to use Wasabi Drive.
 
-Authorization separately establishes that the authenticated Entra principal is trusted to use Wasabi Drive.
-
-The token verifier validates:
-- signature;
-- tenant-specific issuer;
-- API audience;
-- expiry;
-- required delegated scope;
-- explicitly allowed signing algorithm.
+The token verifier validates signature, tenant-specific issuer, API audience, expiry, required delegated scope, and explicitly allowed signing algorithm.
 
 The verifier uses dynamic `import("jose")` for AWS Lambda Node.js 24 compatibility. Do not reintroduce runtime `require("jose")`.
 
 The trusted-user boundary consumes verified `req.auth` claims and checks the expected tenant plus the configured Entra user Object ID (`oid`) allow-list.
 
 Use:
+
 - missing/invalid authentication -> `401`;
-- authenticated but not authorized -> `403`.
+- authenticated but unauthorized -> `403`.
 
-Do not decode the token again in authorization middleware.
+Do not decode the token again in authorization middleware. Do not use email address, username, frontend state, or API keys as application authorization.
 
-Do not use email address, username, frontend state, or API keys as application authorization.
-
-## Configuration
+## Mandatory fail-closed security
 
 Required Entra variables:
+
 - `ENTRA_TENANT_ID`;
 - `ENTRA_API_CLIENT_ID`;
 - `ENTRA_REQUIRED_SCOPE`;
 - `ENTRA_TRUSTED_USER_OBJECT_IDS`.
 
-There is no `ENTRA_AUTH_ENABLED` feature flag. Entra authentication must never fail open or be disabled through configuration.
+There is no `ENTRA_AUTH_ENABLED` feature flag.
 
 For every `/buckets` request:
-- valid Entra authentication is required first;
-- trusted-user authorization is required second;
-- missing/invalid required auth configuration must fail closed;
-- legacy `/auth` is not mounted.
 
-Real Object IDs, tokens, passwords, API keys, AWS credentials, Wasabi credentials, MongoDB credentials, and other secrets must not be committed.
+1. valid Entra authentication is required;
+2. trusted-user authorization is required;
+3. missing or invalid required authentication/authorization configuration must fail closed.
 
-## Local dotenv behavior
+`/auth` is not part of the active application and must never be restored as an Entra fallback or rollback path.
 
-The dotenv/test-isolation fix is complete.
+API Gateway API keys are not user authentication. Do not reintroduce `X-Api-Key`, `private: true`, or API-key-required methods as authentication.
 
-`src/server.js` loads local `.env` before requiring the application/configuration modules.
+## Configuration and secrets
 
-`src/config` must not call `dotenv.config()` or load `.env`, `.env.test`, or `.env.prd`.
+`src/server.js` loads local `.env` before requiring application/configuration modules.
 
-Unit tests control `process.env`.
+`src/config` must not call `dotenv.config()` or load `.env`, `.env.test`, or `.env.prd`. Unit tests control `process.env`.
 
 Serverless Framework v4 handles stage-specific dotenv loading for `.env.test` and `.env.prd` during deployment.
 
-Do not reintroduce dotenv loading into `src/config`.
+Never commit real Object IDs, bearer tokens, passwords, API keys, AWS credentials, Wasabi credentials, MongoDB credentials, or other secrets.
 
-## Legacy authentication
+Browser-visible values are not secrets. Wasabi credentials remain server-side.
 
-Legacy MongoDB/bcrypt/UUID authentication remains physically present only as deletion-only legacy code. It is not part of the active production authentication path and `/auth` is not mounted.
+## Legacy authentication cleanup
 
-Do not improve, extend, or restore the legacy auth architecture. Do not use it as rollback for Entra authentication.
+Legacy MongoDB/bcrypt/UUID authentication is deletion-only code and has no remaining approved application/business purpose.
 
-Its approved next cleanup task is to remove legacy `/auth`, MongoDB, bcrypt, UUID, related environment values, related dependencies, and obsolete Bruno legacy-auth requests if no other persistence requirement exists.
+Until its dedicated cleanup task is complete:
 
-Do not add a replacement database without a real business persistence requirement.
+- do not improve, extend, repair, or restore it;
+- do not use it as rollback for Entra authentication;
+- do not add a replacement database.
 
-## API Gateway and API key
+The approved cleanup removes the legacy `/auth` implementation, MongoDB code/configuration, bcrypt password utilities, UUID token generation, obsolete legacy-auth tests/Bruno requests, and direct dependencies that are no longer used.
 
-API Gateway API keys are not user authentication.
+After physical deletion, preserve a regression proving `/auth` remains unavailable.
 
-The clean `test` stack does not require an API key for protected proxy methods.
+When removing direct dependencies, do not try to remove legitimate transitive copies required by other packages.
 
-The frontend no longer sends `X-Api-Key`, and API Gateway API keys are not required for the application request path.
+## Storage boundary and later Phase 4 work
 
-Do not reintroduce `X-Api-Key`, `private: true`, or API-key-required methods as authentication.
+The current Wasabi adapter still uses AWS SDK for JavaScript v2. A later, separate task will migrate the adapter to AWS SDK v3 while preserving API behavior and the existing storage boundary.
+
+A later task will add backend-authorized short-lived presigned object URLs so Wasabi objects can become private. A presigned URL is a cryptographically signed temporary URL granting a specific storage operation for a limited time.
+
+Do not implement either change unless explicitly requested.
+
+Do not place AWS SDK calls directly in Express routes. Do not proxy file bytes through Lambda by default. Do not introduce a CDN without a concrete requirement.
 
 ## CORS
 
 CORS means Cross-Origin Resource Sharing. It is a browser cross-origin policy, not authentication or authorization.
 
-Current broad CORS behavior is deferred debt.
-
-Do not tighten CORS unless explicitly scoped. CORS is not an authentication control.
+Current broad CORS behavior is deferred debt. Do not tighten CORS unless explicitly scoped.
 
 ## Testing
 
-Standard unit regression:
+Authoritative unit regression:
+
 `npm test`
 
-Use Node.js 24 for authoritative backend test results.
+Use Node.js 24.
 
 Do not delete, skip, or weaken tests merely to make changes pass.
 
 Preserve coverage around:
-- Entra enforcement flag behavior;
+
+- Entra being mandatory with no disable/fallback path;
 - token signature/issuer/audience/expiry/scope validation;
 - `401` versus `403`;
 - Lambda-compatible `jose` loading;
 - trusted-user `oid`/tenant authorization;
-- fail-closed trusted-user configuration;
-- `/auth` mounted only when Entra enforcement is disabled.
+- fail-closed required configuration;
+- `/auth` remaining unavailable.
 
-The safe Bruno integration regression command is:
+Safe integration regression:
+
 `npm run test:integration`
 
-The current Bruno collection was created before Entra enforcement and must be aligned before production:
-- protected bucket requests must support a runtime-provided Entra access token;
-- no bearer token may be committed;
-- test reports must continue skipping headers and bodies;
-- production-target guards must remain intact;
-- legacy `/auth` requests must not remain part of the normal protected `test` regression when `/auth` is intentionally unmounted.
+Protected bucket requests use a short-lived Entra access token supplied at runtime through `INTEGRATION_ACCESS_TOKEN`. Never commit, persist, or log the token.
 
-Do not build automated username/password handling for Microsoft Entra merely to obtain a test token.
+Bruno reports must continue suppressing request/response bodies and headers, and production-target guards must remain intact.
 
-A short-lived access token may be supplied at runtime through an environment variable for the manual pre-production regression workflow.
-
-Do not persist or log that token.
+Do not automate username/password authentication to obtain Entra test tokens.
 
 ## Deployment safety
 
 Do not deploy unless explicitly requested.
 
-Use `test` before `prd` for material backend changes. Run unit tests first, then the Entra-aware Bruno integration regression against the deployed `test` API before production deployment.
+For material backend changes:
 
-Entra authentication is mandatory in every deployed stage. Do not use disabling Entra as rollback. Roll back with a reviewed known-good application/deployment version while preserving the Entra security boundary.
+1. run unit tests;
+2. deploy to `test` only when explicitly authorized;
+3. run the Entra-aware Bruno regression against the deployed `test` API;
+4. deploy to `prd` only after explicit approval.
 
-Do not deliberately configure an untrusted Object ID in production merely to retest `403`; that behavior is already proven in `test`.
+Entra authentication is mandatory in every deployed stage. Do not use disabling Entra as rollback. Roll back to a reviewed known-good application/deployment version while preserving the Entra security boundary.
 
-## Stage-specific deployment
+Untracked local deployment files are `.env.test` and `.env.prd`.
 
-Untracked local backend deployment files:
-- `.env.test`;
-- `.env.prd`.
+Explicit deployment scripts:
 
-Explicit scripts:
 - `npm run deploy:test`;
 - `npm run deploy:prd`.
 
 Do not add a generic deploy command that can silently target production.
 
-Shell/process environment variables may override stage dotenv values.
-
 AWS deployment credentials belong to the AWS credential provider chain/profile, not application dotenv files.
 
-## Current known deferred work
+## Deferred work
 
-Do not opportunistically implement outside the explicitly requested Phase 4 task:
-- legacy MongoDB/bcrypt/UUID physical removal until the dedicated cleanup task;
+Do not opportunistically implement outside the explicitly requested task:
+
 - CORS hardening;
-- bucket pagination/performance changes;
+- Wasabi pagination/performance fixes;
+- presigned object access before its dedicated task;
+- bucket privacy changes;
 - API Gateway REST -> HTTP API migration;
+- Lambda authorizers;
+- Express 5;
+- ESM;
+- TypeScript;
 - Kong;
 - CI/CD;
 - broad dependency modernization.
 
-Approved later Phase 4 work, in separate focused branches, is:
-- migrate the Wasabi storage adapter from AWS SDK for JavaScript v2 to v3 while preserving the existing storage boundary;
-- add backend-authorized short-lived presigned object URLs;
-- move object storage to private access after compatible backend/frontend changes are validated.
-
-Do not place AWS SDK calls directly in Express routes, do not proxy file bytes through Lambda by default, and do not introduce a CDN without a concrete requirement.
-
-## Future CI/CD
-
-CI/CD is not yet implemented.
-
-Future direction is likely GitHub Actions with protected branches, automated unit/build checks, test deployment, integration regression, controlled production approval, and GitHub OIDC for short-lived AWS credentials.
-
-OIDC means OpenID Connect.
-
-Do not implement CI/CD unless explicitly requested.
+Future CI/CD may use GitHub Actions, protected branches, automated tests/builds, test deployment, integration checks, controlled production approval, and GitHub OIDC for short-lived AWS credentials. OIDC means OpenID Connect. Do not implement CI/CD unless explicitly requested.
 
 ## Completion report
 
-For every Copilot task report:
+For every Copilot implementation task, report:
+
 - current branch;
 - commits created;
-- files changed;
+- files changed/deleted;
 - behavior/configuration changed;
-- baseline/final tests;
-- `git diff --check`;
+- baseline and final `npm test` results;
+- `git diff --check` result;
 - integration result when applicable;
 - deployment performed, if explicitly authorized;
-- confirmation no secret/token was committed;
-- remaining issue directly relevant to the task;
+- confirmation that no secret/token was committed;
+- any issue directly relevant to the requested task;
 - recommended next task.
 
 Stop after the requested task.

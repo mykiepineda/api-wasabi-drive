@@ -74,12 +74,6 @@ const config = {
       ? `https://login.microsoftonline.com/${entraTenantId}/discovery/v2.0/keys`
       : undefined,
   },
-  mongodb: {
-    atlasUri: process.env.MONGODB_ATLAS_URI,
-    dnsServers: process.env.MONGODB_DNS_SERVERS?.split(",")
-      .map((server) => server.trim())
-      .filter(Boolean),
-  },
 };
 
 module.exports = config;

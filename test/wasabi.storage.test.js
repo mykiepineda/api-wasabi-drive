@@ -7,37 +7,59 @@ const originalLoad = Module._load;
 const responses = [];
 const requests = [];
 
-class S3 {
-  listObjectsV2(params) {
-    requests.push(params);
-    return { promise: () => Promise.resolve(responses.shift()) };
-  }
-
-  listBuckets() {
-    return { promise: () => Promise.resolve({ Buckets: [] }) };
-  }
-
-  getBucketLocation() {
-    return { promise: () => Promise.resolve({ LocationConstraint: "us-east-2" }) };
+class ListBucketsCommand {
+  constructor(input) {
+    this.input = input;
   }
 }
 
-const AWS = {
-  config: { update: () => {} },
-  Endpoint: class Endpoint {
-    constructor(url) {
-      this.url = url;
+class GetBucketLocationCommand {
+  constructor(input) {
+    this.input = input;
+  }
+}
+
+class ListObjectsV2Command {
+  constructor(input) {
+    this.input = input;
+  }
+}
+
+class S3Client {
+  constructor(options) {
+    this.options = options;
+  }
+
+  send(command) {
+    requests.push(command.input);
+    if (command instanceof ListBucketsCommand) {
+      return Promise.resolve({ Buckets: [] });
     }
-  },
-  S3,
-};
+    if (command instanceof GetBucketLocationCommand) {
+      return Promise.resolve({ LocationConstraint: "us-east-2" });
+    }
+    return Promise.resolve(responses.shift());
+  }
+}
 
 Module._load = function (request, parent, isMain) {
-  if (request === "aws-sdk") {
-    return AWS;
+  if (request === "@aws-sdk/client-s3") {
+    return {
+      GetBucketLocationCommand,
+      ListBucketsCommand,
+      ListObjectsV2Command,
+      S3Client,
+    };
   }
   if (request.endsWith("/config")) {
-    return { wasabi: { serviceUrl: "https://example.test" } };
+    return {
+      wasabi: {
+        serviceUrl: "https://example.test",
+        region: "us-east-2",
+        accessKeyId: "access-key",
+        secretAccessKey: "secret-key",
+      },
+    };
   }
   return originalLoad.call(this, request, parent, isMain);
 };
@@ -94,4 +116,9 @@ test("getTotalKeyCount sums paginated responses", async () => {
     { Bucket: "documents", Delimiter: "/", Prefix: "reports/" },
     { Bucket: "documents", Delimiter: "/", ContinuationToken: "next" },
   ]);
+});
+
+test("getListBuckets delegates to the v3 client", async () => {
+  assert.deepEqual(await wasabi.getListBuckets(), { Buckets: [] });
+  assert.deepEqual(requests, [{}]);
 });

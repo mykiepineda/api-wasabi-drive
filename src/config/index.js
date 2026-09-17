@@ -59,6 +59,7 @@ const config = {
   port: process.env.PORT || 8080,
   wasabi: {
     serviceUrl: process.env.WASABI_SERVICE_URL,
+    region: process.env.WASABI_REGION,
     accessKeyId: process.env.WASABI_ACCESS_KEY_ID,
     secretAccessKey: process.env.WASABI_SECRET_ACCESS_KEY,
   },

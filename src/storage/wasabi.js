@@ -1,20 +1,26 @@
-const AWS = require("aws-sdk");
+const {
+  GetBucketLocationCommand,
+  ListBucketsCommand,
+  ListObjectsV2Command,
+  S3Client,
+} = require("@aws-sdk/client-s3");
 const config = require("../config");
 
-AWS.config.update({
-  accessKeyId: config.wasabi.accessKeyId,
-  secretAccessKey: config.wasabi.secretAccessKey,
-  endpoint: new AWS.Endpoint(config.wasabi.serviceUrl),
+const s3 = new S3Client({
+  endpoint: config.wasabi.serviceUrl,
+  region: config.wasabi.region,
+  credentials: {
+    accessKeyId: config.wasabi.accessKeyId,
+    secretAccessKey: config.wasabi.secretAccessKey,
+  },
 });
 
-const s3 = new AWS.S3();
-
 const getListBuckets = () => {
-  return s3.listBuckets().promise();
+  return s3.send(new ListBucketsCommand({}));
 };
 
 const getBucketRegion = async (name) => {
-  const results = await s3.getBucketLocation({ Bucket: name }).promise();
+  const results = await s3.send(new GetBucketLocationCommand({ Bucket: name }));
 
   let region = results.LocationConstraint;
   region = region.substring(region.lastIndexOf(">") + 1);
@@ -106,7 +112,7 @@ const getListObjects = async (params) => {
     bucketParams = { ...bucketParams, ContinuationToken };
   }
 
-  return s3.listObjectsV2(bucketParams).promise();
+  return s3.send(new ListObjectsV2Command(bucketParams));
 };
 
 const getTotalKeyCount = async (params) => {

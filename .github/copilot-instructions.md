@@ -4,9 +4,9 @@
 
 Wasabi Drive API is an existing production-working Node.js/Express API for browsing files stored in Wasabi Cloud Storage.
 
-The structural refactor and the pre-production Microsoft Entra identity migration are complete in source.
+The structural refactor and Microsoft Entra identity migration are complete and deployed to production.
 
-Verified in AWS `test`:
+Verified in production and AWS `test`:
 - React/MSAL signs in through Microsoft Entra.
 - The SPA sends a real OAuth 2.0 access token for the Wasabi Drive API.
 - API Gateway passes requests without treating an API key as user authentication.
@@ -16,11 +16,12 @@ Verified in AWS `test`:
 - Valid trusted Entra user -> normal bucket/folder/object behavior succeeds.
 - Valid authenticated but untrusted Entra user -> `403`.
 - Malformed trusted-user configuration fails closed.
-- Legacy `/auth` is not mounted while Entra enforcement is enabled.
+- Legacy `/auth` is not mounted.
+- API Gateway API keys and frontend `X-Api-Key` are no longer part of the protected request path.
 
-Production has not yet been cut over to Entra enforcement.
+Entra authentication is mandatory for the Wasabi Drive API. There is no supported configuration or rollback mode that disables Entra protection for `/buckets`.
 
-The current backend objective is NOT further application refactoring. The immediate task before production cutover is to align the Bruno integration regression with the now-protected Entra API, then perform controlled production deployment and verification.
+The current modernization phase is post-Entra security closure. Keep each task narrowly scoped and do not skip ahead to later cleanup/storage tasks unless explicitly requested.
 
 The developer is the technical owner and architectural decision-maker. Copilot assists implementation and does not independently redesign the system.
 
@@ -99,28 +100,19 @@ Do not use email address, username, frontend state, or API keys as application a
 
 ## Configuration
 
-Current Entra variables:
-- `ENTRA_AUTH_ENABLED`;
+Required Entra variables:
 - `ENTRA_TENANT_ID`;
 - `ENTRA_API_CLIENT_ID`;
 - `ENTRA_REQUIRED_SCOPE`;
 - `ENTRA_TRUSTED_USER_OBJECT_IDS`.
 
-`ENTRA_AUTH_ENABLED` remains strict:
-- absent -> disabled;
-- `"false"` -> disabled;
-- `"true"` -> enabled;
-- any other explicit value -> configuration error.
+There is no `ENTRA_AUTH_ENABLED` feature flag. Entra authentication must never fail open or be disabled through configuration.
 
-When Entra enforcement is enabled:
-- `/buckets` requires valid Entra authentication;
-- trusted-user authorization is then required;
-- missing/invalid required auth configuration fails closed;
-- `/auth` is not mounted.
-
-When Entra enforcement is disabled:
-- `/buckets` preserves temporary compatibility behavior;
-- legacy `/auth` remains mounted for rollback compatibility until production cutover is proven.
+For every `/buckets` request:
+- valid Entra authentication is required first;
+- trusted-user authorization is required second;
+- missing/invalid required auth configuration must fail closed;
+- legacy `/auth` is not mounted.
 
 Real Object IDs, tokens, passwords, API keys, AWS credentials, Wasabi credentials, MongoDB credentials, and other secrets must not be committed.
 
@@ -140,15 +132,11 @@ Do not reintroduce dotenv loading into `src/config`.
 
 ## Legacy authentication
 
-Legacy MongoDB/bcrypt/UUID authentication remains physically present only for temporary rollback compatibility while production Entra cutover is incomplete.
+Legacy MongoDB/bcrypt/UUID authentication remains physically present only as deletion-only legacy code. It is not part of the active production authentication path and `/auth` is not mounted.
 
-When `ENTRA_AUTH_ENABLED=true`, `/auth` is intentionally not mounted.
+Do not improve, extend, or restore the legacy auth architecture. Do not use it as rollback for Entra authentication.
 
-Do not improve the legacy auth architecture.
-
-Do not remove MongoDB/bcrypt/UUID in the pre-cutover integration-test task.
-
-After successful production Entra cutover, remove legacy `/auth`, MongoDB, bcrypt, UUID, related environment values, related dependencies, and obsolete Bruno legacy-auth requests if no other persistence requirement exists.
+Its approved next cleanup task is to remove legacy `/auth`, MongoDB, bcrypt, UUID, related environment values, related dependencies, and obsolete Bruno legacy-auth requests if no other persistence requirement exists.
 
 Do not add a replacement database without a real business persistence requirement.
 
@@ -158,23 +146,17 @@ API Gateway API keys are not user authentication.
 
 The clean `test` stack does not require an API key for protected proxy methods.
 
-The frontend still sends transitional `X-Api-Key` during production compatibility rollout.
+The frontend no longer sends `X-Api-Key`, and API Gateway API keys are not required for the application request path.
 
-Do not reintroduce `private: true` or API-key-required methods as part of identity work.
-
-Before production backend cutover, inspect CloudFormation drift for the production stack. Do not delete/recreate production as a routine cutover step.
-
-Removal of `X-Api-Key` and any API Gateway usage-plan/API-key cleanup are separate post-cutover tasks.
+Do not reintroduce `X-Api-Key`, `private: true`, or API-key-required methods as authentication.
 
 ## CORS
 
 CORS means Cross-Origin Resource Sharing. It is a browser cross-origin policy, not authentication or authorization.
 
-Current broad CORS behavior remains transitional during cutover.
+Current broad CORS behavior is deferred debt.
 
-Do not tighten CORS during the Bruno integration-test alignment or production identity cutover unless explicitly scoped.
-
-Post-cutover CORS hardening should allow only required frontend origins and headers after the production identity path is stable.
+Do not tighten CORS unless explicitly scoped. CORS is not an authentication control.
 
 ## Testing
 
@@ -214,19 +196,9 @@ Do not persist or log that token.
 
 Do not deploy unless explicitly requested.
 
-Use `test` before `prd`.
+Use `test` before `prd` for material backend changes. Run unit tests first, then the Entra-aware Bruno integration regression against the deployed `test` API before production deployment.
 
-The application-refactoring phase is complete. The intended cutover sequence is:
-1. align and pass the protected Bruno regression in `test`;
-2. run local backend unit tests and frontend test/build gates;
-3. run production CloudFormation drift detection and review any drift;
-4. verify production frontend build-time configuration;
-5. deploy the Entra-enabled frontend to Firebase while production backend Entra enforcement remains disabled;
-6. verify production frontend compatibility;
-7. enable Entra authentication + trusted-user authorization in `.env.prd`;
-8. deploy backend `prd`;
-9. verify trusted production access, `401` behavior, and `/auth` not-found behavior;
-10. retain rollback by setting `ENTRA_AUTH_ENABLED=false` and redeploying until the cutover is considered stable.
+Entra authentication is mandatory in every deployed stage. Do not use disabling Entra as rollback. Roll back with a reviewed known-good application/deployment version while preserving the Entra security boundary.
 
 Do not deliberately configure an untrusted Object ID in production merely to retest `403`; that behavior is already proven in `test`.
 
@@ -248,19 +220,21 @@ AWS deployment credentials belong to the AWS credential provider chain/profile, 
 
 ## Current known deferred work
 
-Do not opportunistically implement before production cutover:
-- legacy MongoDB/bcrypt/UUID physical removal;
-- `X-Api-Key` removal;
-- API Gateway usage-plan cleanup;
+Do not opportunistically implement outside the explicitly requested Phase 4 task:
+- legacy MongoDB/bcrypt/UUID physical removal until the dedicated cleanup task;
 - CORS hardening;
-- AWS SDK v2 -> v3 migration;
 - bucket pagination/performance changes;
 - API Gateway REST -> HTTP API migration;
 - Kong;
 - CI/CD;
 - broad dependency modernization.
 
-The frontend currently opens Wasabi object URLs directly. Whether object content itself must be protected by Entra is an explicit architecture/security requirement decision, not something to silently redesign during cutover.
+Approved later Phase 4 work, in separate focused branches, is:
+- migrate the Wasabi storage adapter from AWS SDK for JavaScript v2 to v3 while preserving the existing storage boundary;
+- add backend-authorized short-lived presigned object URLs;
+- move object storage to private access after compatible backend/frontend changes are validated.
+
+Do not place AWS SDK calls directly in Express routes, do not proxy file bytes through Lambda by default, and do not introduce a CDN without a concrete requirement.
 
 ## Future CI/CD
 

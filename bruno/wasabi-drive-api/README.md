@@ -27,25 +27,3 @@ az login --tenant $env:ENTRA_TENANT_ID
 ```
 
 `ENTRA_API_IDENTIFIER_URI` must match the API app registration's **Application ID URI** in Entra, for example `api://<API-client-ID>` or a custom URI. If it is omitted, the helper uses `api://<API-client-ID>`. The helper sets `INTEGRATION_ACCESS_TOKEN` in the current PowerShell process without printing or persisting its value. It does not automate username/password authentication or use a client secret.
-
-## Full coverage
-
-Set `INTEGRATION_USER_NAME` and `INTEGRATION_USER_PASSWORD` to unique disposable values, then explicitly allow mutations:
-
-```powershell
-$env:INTEGRATION_TARGET = "development"
-$env:INTEGRATION_ALLOW_MUTATIONS = "true"
-npm run test:integration:full
-```
-
-This scope provides broader disposable-data coverage while excluding known defects. `Create user` and `Update user` mutate MongoDB, and there is no delete-user endpoint. Never use production for automated integration tests.
-
-## Known defects
-
-```powershell
-$env:INTEGRATION_TARGET = "development"
-$env:INTEGRATION_ALLOW_MUTATIONS = "true"
-npm run test:integration:known-defects
-```
-
-The `known-defect-flow` tag selects the ordered create-user, validate-credentials, get-user, and update-user requests needed to reproduce the MongoDB `_id` update defect. Its HTTP 200 expectation is unchanged. A failure is expected until the defect is intentionally fixed; this command is not part of the green regression gate.

@@ -1,7 +1,6 @@
 const apiGatewayHostPattern = /^[a-z0-9-]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com$/i;
 const localHosts = new Set(["localhost", "127.0.0.1"]);
 const allowedTargets = new Set(["local", "development", "test"]);
-const mutationScopes = new Set(["full", "known-defects"]);
 
 function parseBaseUrl(baseUrl) {
   if (typeof baseUrl !== "string" || !baseUrl.trim()) {
@@ -58,12 +57,6 @@ function validateIntegrationTarget({ target, baseUrl, scope = "regression" }) {
   if (target === "test" && !isTestApiGatewayUrl(parsedUrl)) {
     throw new Error(
       "INTEGRATION_TARGET=test requires an HTTPS API Gateway URL with /test as its stage path."
-    );
-  }
-
-  if (mutationScopes.has(scope) && !localUrl) {
-    throw new Error(
-      `${scope} integration tests may target only a local development URL.`
     );
   }
 

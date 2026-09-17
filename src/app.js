@@ -12,19 +12,15 @@ app.use(cors());
 
 /* API Endpoints */
 app.options("*", cors());
-const bucketMiddleware = config.entra.authEnabled
-  ? [
-      createRequireEntraAccessToken(),
-      createRequireTrustedUser(
-        config.entra.trustedUserObjectIds,
-        config.entra.tenantId,
-      ),
-    ]
-  : [];
-app.use("/buckets", ...bucketMiddleware, require("./api/buckets"));
-if (!config.entra.authEnabled) {
-  app.use("/auth", require("./api/auth"));
-}
+app.use(
+  "/buckets",
+  createRequireEntraAccessToken(),
+  createRequireTrustedUser(
+    config.entra.trustedUserObjectIds,
+    config.entra.tenantId,
+  ),
+  require("./api/buckets"),
+);
 
 module.exports = app;
 module.exports.handler = serverless(app);

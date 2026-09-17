@@ -1,22 +1,3 @@
-const parseEntraAuthEnabled = (value) => {
-  if (value === undefined) {
-    return false;
-  }
-
-  const normalizedValue = value.trim().toLowerCase();
-  if (normalizedValue === "true") {
-    return true;
-  }
-
-  if (normalizedValue === "false") {
-    return false;
-  }
-
-  throw new Error(
-    'Invalid ENTRA_AUTH_ENABLED value. Expected "true" or "false".',
-  );
-};
-
 const isValidTrustedUserObjectId = (value) => {
   if (typeof value !== "string") {
     return false;
@@ -65,16 +46,13 @@ const parseTrustedUserObjectIds = (value, { strict = false } = {}) => {
 };
 
 const entraTenantId = process.env.ENTRA_TENANT_ID?.trim();
-const entraAuthEnabled = parseEntraAuthEnabled(process.env.ENTRA_AUTH_ENABLED);
 const trustedUserObjectIds = parseTrustedUserObjectIds(
   process.env.ENTRA_TRUSTED_USER_OBJECT_IDS,
-  { strict: entraAuthEnabled },
+  { strict: true },
 );
 
-if (entraAuthEnabled && trustedUserObjectIds.length === 0) {
-  throw new Error(
-    "Missing ENTRA_TRUSTED_USER_OBJECT_IDS configuration when ENTRA_AUTH_ENABLED is true.",
-  );
+if (trustedUserObjectIds.length === 0) {
+  throw new Error("Missing ENTRA_TRUSTED_USER_OBJECT_IDS configuration.");
 }
 
 const config = {
@@ -85,7 +63,6 @@ const config = {
     secretAccessKey: process.env.WASABI_SECRET_ACCESS_KEY,
   },
   entra: {
-    authEnabled: entraAuthEnabled,
     tenantId: entraTenantId,
     apiClientId: process.env.ENTRA_API_CLIENT_ID?.trim(),
     requiredScope: process.env.ENTRA_REQUIRED_SCOPE?.trim(),
@@ -106,5 +83,4 @@ const config = {
 };
 
 module.exports = config;
-module.exports.parseEntraAuthEnabled = parseEntraAuthEnabled;
 module.exports.parseTrustedUserObjectIds = parseTrustedUserObjectIds;

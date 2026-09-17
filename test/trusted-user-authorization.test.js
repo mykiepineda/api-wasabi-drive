@@ -2,6 +2,17 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
 
+const trustedUserObjectId = "11111111-2222-4222-8aaa-555555666666";
+const alternateTrustedUserObjectId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const originalEnvironment = { ...process.env };
+
+Object.assign(process.env, {
+  ENTRA_TENANT_ID: "tenant-id",
+  ENTRA_API_CLIENT_ID: "api-client-id",
+  ENTRA_REQUIRED_SCOPE: "WasabiDrive.Access",
+  ENTRA_TRUSTED_USER_OBJECT_IDS: trustedUserObjectId,
+});
+
 const configPath = require.resolve("../src/config");
 const { createRequireTrustedUser } = require("../src/authentication/requireTrustedUser");
 const { createRequireEntraAccessToken } = require("../src/authentication/requireEntraAccessToken");
@@ -18,9 +29,6 @@ const createResponse = () => ({
     return this;
   },
 });
-
-const trustedUserObjectId = "11111111-2222-4222-8aaa-555555666666";
-const alternateTrustedUserObjectId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 
 const parseTrustedIds = (value, strict = false) => {
   const config = require(configPath);
@@ -117,12 +125,12 @@ test("whitespace and case normalization works", () => {
   );
 });
 
-test("missing allow-list with ENTRA_AUTH_ENABLED=true fails closed", () => {
+test("missing trusted-user allow-list fails closed", () => {
   assert.throws(
     () =>
       execFileSync(process.execPath, [
         "-e",
-        "process.env.ENTRA_AUTH_ENABLED = 'true'; process.env.ENTRA_TENANT_ID = 'tenant-id'; process.env.ENTRA_API_CLIENT_ID = 'api-client-id'; process.env.ENTRA_REQUIRED_SCOPE = 'WasabiDrive.Access'; delete process.env.ENTRA_TRUSTED_USER_OBJECT_IDS; require('./src/config');",
+        "process.env.ENTRA_TENANT_ID = 'tenant-id'; process.env.ENTRA_API_CLIENT_ID = 'api-client-id'; process.env.ENTRA_REQUIRED_SCOPE = 'WasabiDrive.Access'; delete process.env.ENTRA_TRUSTED_USER_OBJECT_IDS; require('./src/config');",
       ], {
         cwd: require("node:process").cwd(),
         encoding: "utf8",
@@ -132,12 +140,12 @@ test("missing allow-list with ENTRA_AUTH_ENABLED=true fails closed", () => {
   );
 });
 
-test("empty allow-list with enforcement enabled fails closed", () => {
+test("empty trusted-user allow-list fails closed", () => {
   assert.throws(
     () =>
       execFileSync(process.execPath, [
         "-e",
-        "process.env.ENTRA_AUTH_ENABLED = 'true'; process.env.ENTRA_TENANT_ID = 'tenant-id'; process.env.ENTRA_API_CLIENT_ID = 'api-client-id'; process.env.ENTRA_REQUIRED_SCOPE = 'WasabiDrive.Access'; process.env.ENTRA_TRUSTED_USER_OBJECT_IDS = ' ,  '; require('./src/config');",
+        "process.env.ENTRA_TENANT_ID = 'tenant-id'; process.env.ENTRA_API_CLIENT_ID = 'api-client-id'; process.env.ENTRA_REQUIRED_SCOPE = 'WasabiDrive.Access'; process.env.ENTRA_TRUSTED_USER_OBJECT_IDS = ' ,  '; require('./src/config');",
       ], {
         cwd: require("node:process").cwd(),
         encoding: "utf8",
@@ -147,12 +155,12 @@ test("empty allow-list with enforcement enabled fails closed", () => {
   );
 });
 
-test("malformed allow-list with enforcement enabled fails closed", () => {
+test("malformed trusted-user allow-list fails closed", () => {
   assert.throws(
     () =>
       execFileSync(process.execPath, [
         "-e",
-        "process.env.ENTRA_AUTH_ENABLED = 'true'; process.env.ENTRA_TENANT_ID = 'tenant-id'; process.env.ENTRA_API_CLIENT_ID = 'api-client-id'; process.env.ENTRA_REQUIRED_SCOPE = 'WasabiDrive.Access'; process.env.ENTRA_TRUSTED_USER_OBJECT_IDS = 'not-a-guid, valid-guid'; require('./src/config');",
+        "process.env.ENTRA_TENANT_ID = 'tenant-id'; process.env.ENTRA_API_CLIENT_ID = 'api-client-id'; process.env.ENTRA_REQUIRED_SCOPE = 'WasabiDrive.Access'; process.env.ENTRA_TRUSTED_USER_OBJECT_IDS = 'not-a-guid, valid-guid'; require('./src/config');",
       ], {
         cwd: require("node:process").cwd(),
         encoding: "utf8",
@@ -160,15 +168,6 @@ test("malformed allow-list with enforcement enabled fails closed", () => {
       }),
     /Invalid ENTRA_TRUSTED_USER_OBJECT_IDS value/,
   );
-});
-
-test("missing allow-list with enforcement disabled does not break startup", () => {
-  assert.doesNotThrow(() => {
-    delete process.env.ENTRA_AUTH_ENABLED;
-    delete process.env.ENTRA_TRUSTED_USER_OBJECT_IDS;
-    delete require.cache[configPath];
-    require(configPath);
-  });
 });
 
 test("authentication executes before authorization", async () => {
@@ -209,4 +208,16 @@ test("strict parsing rejects malformed values", () => {
     () => parseTrustedIds(`not-a-guid, ${trustedUserObjectId}`, true),
     /Invalid ENTRA_TRUSTED_USER_OBJECT_IDS value/,
   );
+});
+
+
+test.after(() => {
+  for (const name of Object.keys(process.env)) {
+    if (!(name in originalEnvironment)) {
+      delete process.env[name];
+    }
+  }
+
+  Object.assign(process.env, originalEnvironment);
+  delete require.cache[configPath];
 });

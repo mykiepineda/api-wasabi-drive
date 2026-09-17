@@ -4,9 +4,9 @@
 
 Wasabi Drive API is an existing production-working Node.js/Express API for browsing files stored in Wasabi Cloud Storage.
 
-The structural refactor and Microsoft Entra identity migration are complete and deployed. Entra authentication is mandatory for protected API access; there is no supported configuration or rollback mode that disables Entra protection for `/buckets`.
+The structural refactor, Microsoft Entra identity migration, mandatory-authentication closure, and legacy MongoDB authentication removal are complete. Entra authentication is mandatory for protected API access; there is no supported configuration or rollback mode that disables Entra protection for `/buckets`.
 
-Current modernization work is Phase 4: post-Entra security closure. Keep each task narrowly scoped and do not skip ahead unless explicitly requested.
+Current modernization work is Phase 4: post-Entra security closure. The next approved backend change is migration of the Wasabi storage adapter from AWS SDK for JavaScript v2 to v3 while preserving current API behavior. Keep each task narrowly scoped and do not skip ahead unless explicitly requested.
 
 The developer is the technical owner and architectural decision-maker. Copilot assists implementation and must not independently redesign the system.
 
@@ -105,31 +105,38 @@ Never commit real Object IDs, bearer tokens, passwords, API keys, AWS credential
 
 Browser-visible values are not secrets. Wasabi credentials remain server-side.
 
-## Legacy authentication cleanup
+## Legacy authentication removal
 
-Legacy MongoDB/bcrypt/UUID authentication is deletion-only code and has no remaining approved application/business purpose.
+Legacy MongoDB/bcrypt/UUID authentication has been physically removed and must stay removed.
 
-Until its dedicated cleanup task is complete:
+- `/auth` is not an application endpoint and must remain unavailable.
+- MongoDB has no approved application/business purpose.
+- Do not restore bcrypt, UUID-style legacy auth tokens, or a replacement database without a real persistence requirement.
+- Preserve the regression proving `/auth` remains unavailable.
+- Legitimate transitive `uuid` packages required by other dependencies are not legacy application authentication.
 
-- do not improve, extend, repair, or restore it;
-- do not use it as rollback for Entra authentication;
-- do not add a replacement database.
 
-The approved cleanup removes the legacy `/auth` implementation, MongoDB code/configuration, bcrypt password utilities, UUID token generation, obsolete legacy-auth tests/Bruno requests, and direct dependencies that are no longer used.
+## Storage boundary and Phase 4 storage work
 
-After physical deletion, preserve a regression proving `/auth` remains unavailable.
+The current Wasabi adapter still uses AWS SDK for JavaScript v2.
 
-When removing direct dependencies, do not try to remove legitimate transitive copies required by other packages.
+The approved next backend task is a focused migration of `src/storage/wasabi.js` to AWS SDK for JavaScript v3 using the modular S3 client while preserving the existing storage interface and API behavior.
 
-## Storage boundary and later Phase 4 work
+During the SDK migration:
 
-The current Wasabi adapter still uses AWS SDK for JavaScript v2. A later, separate task will migrate the adapter to AWS SDK v3 while preserving API behavior and the existing storage boundary.
+- keep AWS SDK usage inside `src/storage`;
+- preserve the exported storage operations and their service-layer contract;
+- keep Wasabi credentials server-side and supplied through centralized configuration;
+- use the configured Wasabi endpoint explicitly;
+- use an explicit Wasabi signing region rather than inferring it from the endpoint;
+- remove the direct `aws-sdk` v2 dependency only after the adapter and tests have migrated;
+- do not add presigned URLs yet;
+- do not fix pagination, total-key counting, error handling, or unrelated storage behavior in the same task.
 
 A later task will add backend-authorized short-lived presigned object URLs so Wasabi objects can become private. A presigned URL is a cryptographically signed temporary URL granting a specific storage operation for a limited time.
 
-Do not implement either change unless explicitly requested.
-
 Do not place AWS SDK calls directly in Express routes. Do not proxy file bytes through Lambda by default. Do not introduce a CDN without a concrete requirement.
+
 
 ## CORS
 

@@ -119,7 +119,7 @@ const getListObjects = async (params) => {
 
 const getObjectAccessUrl = ({ Bucket, Key }) => {
   return getSignedUrl(s3, new GetObjectCommand({ Bucket, Key }), {
-    expiresIn: config.wasabi.objectAccessUrlExpiresIn,
+    expiresIn: 3600,
   });
 };
 

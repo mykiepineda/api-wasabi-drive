@@ -62,9 +62,6 @@ const config = {
     region: process.env.WASABI_REGION,
     accessKeyId: process.env.WASABI_ACCESS_KEY_ID,
     secretAccessKey: process.env.WASABI_SECRET_ACCESS_KEY,
-    objectAccessUrlExpiresIn: Number(
-      process.env.WASABI_OBJECT_ACCESS_URL_EXPIRES_IN,
-    ),
   },
   entra: {
     tenantId: entraTenantId,

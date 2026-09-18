@@ -15,8 +15,22 @@ const getListObjects = async (params) => {
   });
 
   const ListObjects = await wasabi.getListObjects(params);
+  const response = { ...ListObjects, TotalKeyCount };
 
-  return { ...ListObjects, TotalKeyCount };
+  if (!ListObjects.Contents?.length) {
+    return response;
+  }
+
+  return {
+    ...response,
+    Contents: await Promise.all(ListObjects.Contents.map(async (object) => ({
+      ...object,
+      AccessUrl: await wasabi.getObjectAccessUrl({
+        Bucket: params.Bucket,
+        Key: object.Key,
+      }),
+    }))),
+  };
 };
 
 module.exports = {

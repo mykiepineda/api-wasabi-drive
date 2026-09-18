@@ -1,9 +1,11 @@
 const {
+  GetObjectCommand,
   GetBucketLocationCommand,
   ListBucketsCommand,
   ListObjectsV2Command,
   S3Client,
 } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const config = require("../config");
 
 const s3 = new S3Client({
@@ -115,6 +117,12 @@ const getListObjects = async (params) => {
   return s3.send(new ListObjectsV2Command(bucketParams));
 };
 
+const getObjectAccessUrl = ({ Bucket, Key }) => {
+  return getSignedUrl(s3, new GetObjectCommand({ Bucket, Key }), {
+    expiresIn: config.wasabi.objectAccessUrlExpiresIn,
+  });
+};
+
 const getTotalKeyCount = async (params) => {
   const { Bucket, Prefix } = params;
 
@@ -140,5 +148,6 @@ module.exports = {
   getListBuckets,
   getBucketRegion,
   getListObjects,
+  getObjectAccessUrl,
   getTotalKeyCount,
 };

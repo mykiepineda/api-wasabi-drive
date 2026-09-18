@@ -4,9 +4,11 @@
 
 Wasabi Drive API is an existing production-working Node.js/Express API for browsing files stored in Wasabi Cloud Storage.
 
-The structural refactor, Microsoft Entra identity migration, mandatory-authentication closure, and legacy MongoDB authentication removal are complete. Entra authentication is mandatory for protected API access; there is no supported configuration or rollback mode that disables Entra protection for `/buckets`.
+The structural refactor, Microsoft Entra identity migration, mandatory-authentication closure, legacy MongoDB authentication removal, and Wasabi storage migration to AWS SDK for JavaScript v3 are complete and production-validated.
 
-Current modernization work is Phase 4: post-Entra security closure. The next approved backend change is migration of the Wasabi storage adapter from AWS SDK for JavaScript v2 to v3 while preserving current API behavior. Keep each task narrowly scoped and do not skip ahead unless explicitly requested.
+Entra authentication is mandatory for protected API access. There is no supported configuration or rollback mode that disables Entra protection for `/buckets`.
+
+Current modernization work is Phase 4: post-Entra security closure. The next approved backend task is authenticated/authorized temporary object access using short-lived Wasabi presigned GET URLs. Keep each task narrowly scoped and do not skip ahead unless explicitly requested.
 
 The developer is the technical owner and architectural decision-maker. Copilot assists implementation and must not independently redesign the system.
 
@@ -26,7 +28,7 @@ Preserve these boundaries:
 
 - `src/server.js` owns local HTTP startup and local `.env` loading.
 - `src/app.js` constructs the Express application and Lambda handler.
-- `src/config` parses and validates values already present in `process.env`.
+- `src/config` parses values already present in `process.env`.
 - `src/authentication/entraTokenVerifier.js` validates Entra access tokens.
 - `src/authentication/requireEntraAccessToken.js` is the authentication boundary.
 - `src/authentication/requireTrustedUser.js` is the application-authorization boundary.
@@ -41,6 +43,7 @@ Current runtime/deployment stack:
 - AWS Lambda;
 - API Gateway REST API;
 - `serverless-http`;
+- AWS SDK for JavaScript v3;
 - Wasabi S3-compatible storage.
 
 Do not migrate Express 5, ESM, TypeScript, API Gateway HTTP API, Terraform, CDK, Kong, or another deployment framework unless explicitly requested.
@@ -89,7 +92,7 @@ For every `/buckets` request:
 2. trusted-user authorization is required;
 3. missing or invalid required authentication/authorization configuration must fail closed.
 
-`/auth` is not part of the active application and must never be restored as an Entra fallback or rollback path.
+`/auth` is not an application endpoint and must never be restored as an Entra fallback or rollback path.
 
 API Gateway API keys are not user authentication. Do not reintroduce `X-Api-Key`, `private: true`, or API-key-required methods as authentication.
 
@@ -101,7 +104,14 @@ API Gateway API keys are not user authentication. Do not reintroduce `X-Api-Key`
 
 Serverless Framework v4 handles stage-specific dotenv loading for `.env.test` and `.env.prd` during deployment.
 
-Never commit real Object IDs, bearer tokens, passwords, API keys, AWS credentials, Wasabi credentials, MongoDB credentials, or other secrets.
+Wasabi configuration remains explicit:
+
+- `WASABI_SERVICE_URL` is the full absolute HTTPS Wasabi S3 endpoint, for example `https://s3.ap-northeast-1.wasabisys.com`;
+- `WASABI_REGION` is the corresponding Wasabi signing/storage region, for example `ap-northeast-1`;
+- do not derive the region by parsing the endpoint;
+- the endpoint and region must correspond to the same Wasabi region.
+
+Never commit real Object IDs, bearer tokens, passwords, API keys, AWS credentials, Wasabi credentials, or other secrets.
 
 Browser-visible values are not secrets. Wasabi credentials remain server-side.
 
@@ -115,28 +125,46 @@ Legacy MongoDB/bcrypt/UUID authentication has been physically removed and must s
 - Preserve the regression proving `/auth` remains unavailable.
 - Legitimate transitive `uuid` packages required by other dependencies are not legacy application authentication.
 
+## Storage boundary and temporary object access
 
-## Storage boundary and Phase 4 storage work
+The Wasabi adapter uses AWS SDK for JavaScript v3 through `@aws-sdk/client-s3`.
 
-The current Wasabi adapter still uses AWS SDK for JavaScript v2.
+Preserve the dependency direction:
 
-The approved next backend task is a focused migration of `src/storage/wasabi.js` to AWS SDK for JavaScript v3 using the modular S3 client while preserving the existing storage interface and API behavior.
+HTTP / Express route
+-> application/service layer
+-> storage implementation
+-> AWS SDK
+-> Wasabi.
 
-During the SDK migration:
+AWS SDK and presigning calls belong in `src/storage`. Do not place them directly in Express routes.
 
-- keep AWS SDK usage inside `src/storage`;
-- preserve the exported storage operations and their service-layer contract;
-- keep Wasabi credentials server-side and supplied through centralized configuration;
-- use the configured Wasabi endpoint explicitly;
-- use an explicit Wasabi signing region rather than inferring it from the endpoint;
-- remove the direct `aws-sdk` v2 dependency only after the adapter and tests have migrated;
-- do not add presigned URLs yet;
-- do not fix pagination, total-key counting, error handling, or unrelated storage behavior in the same task.
+The approved next backend task adds short-lived presigned GET access to objects returned by the existing authenticated object-listing flow.
 
-A later task will add backend-authorized short-lived presigned object URLs so Wasabi objects can become private. A presigned URL is a cryptographically signed temporary URL granting a specific storage operation for a limited time.
+A presigned URL is a cryptographically signed temporary URL granting a specific storage operation for a limited time. It is a bearer capability: anyone possessing an unexpired URL can use the granted operation. Never log complete signed URLs.
 
-Do not place AWS SDK calls directly in Express routes. Do not proxy file bytes through Lambda by default. Do not introduce a CDN without a concrete requirement.
+For the initial implementation:
 
+- preserve `GET /buckets/:Bucket/objects/:Prefix(*)`;
+- preserve the existing Entra authentication and trusted-user authorization boundary;
+- keep `wasabi.getListObjects()` as the storage listing operation;
+- add a focused storage signing operation such as `getObjectAccessUrl({ Bucket, Key })`;
+- use `GetObjectCommand` plus `@aws-sdk/s3-request-presigner` and the existing configured `S3Client`;
+- enrich only the final page returned to the client: add `AccessUrl` to each item in `Contents` in the service layer after listing;
+- do not add `AccessUrl` to `CommonPrefixes`;
+- do not put presigning inside `getListObjects()`, because `getTotalKeyCount()` also calls that function while walking pages and must not generate unused URLs;
+- use a fixed initial expiry of 3600 seconds;
+- do not add a configuration setting for the expiry yet;
+- do not perform `HeadObject` merely to generate a URL;
+- if signing fails, surface the failure through the existing error path; never fall back to a raw public Wasabi URL;
+- do not proxy file bytes through Lambda;
+- do not add a CDN;
+- do not make Wasabi objects private during this backend capability task;
+- do not modify the frontend during this backend task.
+
+The current frontend will ignore the additional `AccessUrl` property until the dedicated frontend task. This backend-first response enrichment preserves independent backend/frontend deployment.
+
+Do not fix pagination, total-key counting, broad error handling, or unrelated storage behavior while adding presigned access.
 
 ## CORS
 
@@ -161,8 +189,11 @@ Preserve coverage around:
 - `401` versus `403`;
 - Lambda-compatible `jose` loading;
 - trusted-user `oid`/tenant authorization;
-- fail-closed required configuration;
-- `/auth` remaining unavailable.
+- fail-closed required authentication configuration;
+- `/auth` remaining unavailable;
+- existing Wasabi listing and total-key-count behavior.
+
+For presigned access, add focused tests around the storage signer and service enrichment. Use fake URLs/credentials only. Do not place complete real signed URLs or real credentials in fixtures or logs.
 
 Safe integration regression:
 
@@ -183,7 +214,8 @@ For material backend changes:
 1. run unit tests;
 2. deploy to `test` only when explicitly authorized;
 3. run the Entra-aware Bruno regression against the deployed `test` API;
-4. deploy to `prd` only after explicit approval.
+4. perform relevant functional checks;
+5. deploy to `prd` only after explicit approval.
 
 Entra authentication is mandatory in every deployed stage. Do not use disabling Entra as rollback. Roll back to a reviewed known-good application/deployment version while preserving the Entra security boundary.
 
@@ -202,10 +234,11 @@ AWS deployment credentials belong to the AWS credential provider chain/profile, 
 
 Do not opportunistically implement outside the explicitly requested task:
 
+- frontend migration to `AccessUrl` before its dedicated task;
+- Wasabi bucket/object privacy cutover;
 - CORS hardening;
 - Wasabi pagination/performance fixes;
-- presigned object access before its dedicated task;
-- bucket privacy changes;
+- custom-domain/CDN/file-proxy work for enterprise network compatibility;
 - API Gateway REST -> HTTP API migration;
 - Lambda authorizers;
 - Express 5;
@@ -229,7 +262,7 @@ For every Copilot implementation task, report:
 - `git diff --check` result;
 - integration result when applicable;
 - deployment performed, if explicitly authorized;
-- confirmation that no secret/token was committed;
+- confirmation that no secret/token or complete real signed URL was committed or logged;
 - any issue directly relevant to the requested task;
 - recommended next task.
 

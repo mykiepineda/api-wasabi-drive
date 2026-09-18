@@ -6,8 +6,15 @@ const wasabiPath = require.resolve("../src/storage/wasabi");
 const originalLoad = Module._load;
 const responses = [];
 const requests = [];
+const signedUrlRequests = [];
 
 class ListBucketsCommand {
+  constructor(input) {
+    this.input = input;
+  }
+}
+
+class GetObjectCommand {
   constructor(input) {
     this.input = input;
   }
@@ -42,14 +49,23 @@ class S3Client {
   }
 }
 
+const getSignedUrl = (client, command, options) => {
+  signedUrlRequests.push({ client, command, options });
+  return Promise.resolve("https://example.test/fake-signed-object-url");
+};
+
 Module._load = function (request, parent, isMain) {
   if (request === "@aws-sdk/client-s3") {
     return {
+      GetObjectCommand,
       GetBucketLocationCommand,
       ListBucketsCommand,
       ListObjectsV2Command,
       S3Client,
     };
+  }
+  if (request === "@aws-sdk/s3-request-presigner") {
+    return { getSignedUrl };
   }
   if (request.endsWith("/config")) {
     return {
@@ -58,6 +74,7 @@ Module._load = function (request, parent, isMain) {
         region: "us-east-2",
         accessKeyId: "access-key",
         secretAccessKey: "secret-key",
+        objectAccessUrlExpiresIn: 3600,
       },
     };
   }
@@ -73,6 +90,7 @@ test.after(() => {
 test.beforeEach(() => {
   responses.length = 0;
   requests.length = 0;
+  signedUrlRequests.length = 0;
 });
 
 test("getListObjects maps request parameters for S3", async () => {
@@ -121,4 +139,21 @@ test("getTotalKeyCount sums paginated responses", async () => {
 test("getListBuckets delegates to the v3 client", async () => {
   assert.deepEqual(await wasabi.getListBuckets(), { Buckets: [] });
   assert.deepEqual(requests, [{}]);
+});
+
+test("getObjectAccessUrl signs the requested object with the configured client", async () => {
+  const result = await wasabi.getObjectAccessUrl({
+    Bucket: "documents",
+    Key: "reports/file.txt",
+  });
+
+  assert.equal(result, "https://example.test/fake-signed-object-url");
+  assert.equal(signedUrlRequests.length, 1);
+  assert.ok(signedUrlRequests[0].command instanceof GetObjectCommand);
+  assert.deepEqual(signedUrlRequests[0].command.input, {
+    Bucket: "documents",
+    Key: "reports/file.txt",
+  });
+  assert.deepEqual(signedUrlRequests[0].options, { expiresIn: 3600 });
+  assert.ok(signedUrlRequests[0].client instanceof S3Client);
 });

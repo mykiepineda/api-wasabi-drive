@@ -120,7 +120,7 @@ test("getBucketRegion returns the region descriptions", async () => {
   });
 });
 
-test("getTotalKeyCount sums paginated responses", async () => {
+test("getTotalKeyCount preserves prefix across paginated responses", async () => {
   responses.push(
     { IsTruncated: true, KeyCount: 2, NextContinuationToken: "next" },
     { IsTruncated: false, KeyCount: 3 },
@@ -132,7 +132,12 @@ test("getTotalKeyCount sums paginated responses", async () => {
   }), 5);
   assert.deepEqual(requests, [
     { Bucket: "documents", Delimiter: "/", Prefix: "reports/" },
-    { Bucket: "documents", Delimiter: "/", ContinuationToken: "next" },
+    {
+      Bucket: "documents",
+      Delimiter: "/",
+      Prefix: "reports/",
+      ContinuationToken: "next",
+    },
   ]);
 });
 

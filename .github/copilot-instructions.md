@@ -1,269 +1,315 @@
 # Wasabi Drive API - Copilot Instructions
 
-## Project status
+## Current project phase
 
-Wasabi Drive API is an existing production-working Node.js/Express API for browsing files stored in Wasabi Cloud Storage.
+Wasabi Drive is an existing production-working application.
 
-The structural refactor, Microsoft Entra identity migration, mandatory-authentication closure, legacy MongoDB authentication removal, and Wasabi storage migration to AWS SDK for JavaScript v3 are complete and production-validated.
+The current backend modernization phase is:
 
-Entra authentication is mandatory for protected API access. There is no supported configuration or rollback mode that disables Entra protection for `/buckets`.
+**Phase 5 — Browse Correctness and Pagination Scalability.**
 
-Current modernization work is Phase 4: post-Entra security closure. The next approved backend task is authenticated/authorized temporary object access using short-lived Wasabi presigned GET URLs. Keep each task narrowly scoped and do not skip ahead unless explicitly requested.
+The developer is the technical owner and architectural decision-maker.
 
-The developer is the technical owner and architectural decision-maker. Copilot assists implementation and must not independently redesign the system.
+Copilot should implement only the requested task and must not independently redesign the application.
 
-## Branch and repository safety
+Preserve a working deployable system.
 
-- `master` is the protected integration/release branch.
-- Never commit implementation changes directly to `master`.
-- Work only in the current workspace and current branch. Do not create branches or worktrees unless explicitly instructed.
-- Do not modify this instruction file unless the task explicitly authorizes it.
-- Keep commits focused and reviewable.
-- Avoid unrelated cleanup.
-- Stop after the requested task; do not automatically continue to the next modernization task.
+## Branch safety
 
-## Current architecture
+`master` is the protected integration/release branch.
 
-Preserve these boundaries:
+Never commit implementation changes directly to `master`.
 
-- `src/server.js` owns local HTTP startup and local `.env` loading.
-- `src/app.js` constructs the Express application and Lambda handler.
-- `src/config` parses values already present in `process.env`.
-- `src/authentication/entraTokenVerifier.js` validates Entra access tokens.
-- `src/authentication/requireEntraAccessToken.js` is the authentication boundary.
-- `src/authentication/requireTrustedUser.js` is the application-authorization boundary.
-- Bucket flow is `src/api/buckets.js` -> `src/service/buckets.js` -> `src/storage/wasabi.js` -> AWS SDK -> Wasabi.
+Use a focused task branch such as:
 
-Current runtime/deployment stack:
+* `fix/pagination-prefix`;
+* `refactor/remove-total-key-count`;
+* another explicitly approved Phase 5 branch.
 
-- Node.js 24;
-- CommonJS;
-- Express 4.22.x;
-- Serverless Framework v4;
-- AWS Lambda;
-- API Gateway REST API;
-- `serverless-http`;
-- AWS SDK for JavaScript v3;
-- Wasabi S3-compatible storage.
+Do not automatically continue to another task after completing the requested work.
 
-Do not migrate Express 5, ESM, TypeScript, API Gateway HTTP API, Terraform, CDK, Kong, or another deployment framework unless explicitly requested.
+Avoid unrelated cleanup, formatting, dependency upgrades or architectural changes.
 
-## Authentication and authorization
+## Current production architecture
 
-Approved identity flow:
+Backend:
 
-React/MSAL
--> Microsoft Entra
--> OAuth 2.0 / OpenID Connect access token
--> API Gateway REST API
--> Express authentication
--> application authorization
--> Wasabi.
+* Node.js 24;
+* Express 4;
+* CommonJS;
+* AWS Lambda;
+* API Gateway REST API;
+* Serverless Framework v4;
+* CloudFormation;
+* AWS SDK for JavaScript v3;
+* Wasabi S3-compatible storage;
+* `test` and `prd` stages.
 
-Authentication establishes that the bearer access token is valid for this API. Authorization separately establishes that the authenticated Entra principal is trusted to use Wasabi Drive.
-
-The token verifier validates signature, tenant-specific issuer, API audience, expiry, required delegated scope, and explicitly allowed signing algorithm.
-
-The verifier uses dynamic `import("jose")` for AWS Lambda Node.js 24 compatibility. Do not reintroduce runtime `require("jose")`.
-
-The trusted-user boundary consumes verified `req.auth` claims and checks the expected tenant plus the configured Entra user Object ID (`oid`) allow-list.
-
-Use:
-
-- missing/invalid authentication -> `401`;
-- authenticated but unauthorized -> `403`.
-
-Do not decode the token again in authorization middleware. Do not use email address, username, frontend state, or API keys as application authorization.
-
-## Mandatory fail-closed security
-
-Required Entra variables:
-
-- `ENTRA_TENANT_ID`;
-- `ENTRA_API_CLIENT_ID`;
-- `ENTRA_REQUIRED_SCOPE`;
-- `ENTRA_TRUSTED_USER_OBJECT_IDS`.
-
-There is no `ENTRA_AUTH_ENABLED` feature flag.
-
-For every `/buckets` request:
-
-1. valid Entra authentication is required;
-2. trusted-user authorization is required;
-3. missing or invalid required authentication/authorization configuration must fail closed.
-
-`/auth` is not an application endpoint and must never be restored as an Entra fallback or rollback path.
-
-API Gateway API keys are not user authentication. Do not reintroduce `X-Api-Key`, `private: true`, or API-key-required methods as authentication.
-
-## Configuration and secrets
-
-`src/server.js` loads local `.env` before requiring application/configuration modules.
-
-`src/config` must not call `dotenv.config()` or load `.env`, `.env.test`, or `.env.prd`. Unit tests control `process.env`.
-
-Serverless Framework v4 handles stage-specific dotenv loading for `.env.test` and `.env.prd` during deployment.
-
-Wasabi configuration remains explicit:
-
-- `WASABI_SERVICE_URL` is the full absolute HTTPS Wasabi S3 endpoint, for example `https://s3.ap-northeast-1.wasabisys.com`;
-- `WASABI_REGION` is the corresponding Wasabi signing/storage region, for example `ap-northeast-1`;
-- do not derive the region by parsing the endpoint;
-- the endpoint and region must correspond to the same Wasabi region.
-
-Never commit real Object IDs, bearer tokens, passwords, API keys, AWS credentials, Wasabi credentials, or other secrets.
-
-Browser-visible values are not secrets. Wasabi credentials remain server-side.
-
-## Legacy authentication removal
-
-Legacy MongoDB/bcrypt/UUID authentication has been physically removed and must stay removed.
-
-- `/auth` is not an application endpoint and must remain unavailable.
-- MongoDB has no approved application/business purpose.
-- Do not restore bcrypt, UUID-style legacy auth tokens, or a replacement database without a real persistence requirement.
-- Preserve the regression proving `/auth` remains unavailable.
-- Legitimate transitive `uuid` packages required by other dependencies are not legacy application authentication.
-
-## Storage boundary and temporary object access
-
-The Wasabi adapter uses AWS SDK for JavaScript v3 through `@aws-sdk/client-s3`.
-
-Preserve the dependency direction:
+Preserve the established dependency direction:
 
 HTTP / Express route
 -> application/service layer
--> storage implementation
+-> storage/infrastructure implementation
 -> AWS SDK
 -> Wasabi.
 
-AWS SDK and presigning calls belong in `src/storage`. Do not place them directly in Express routes.
+AWS SDK calls belong in the storage/infrastructure layer.
 
-The approved next backend task adds short-lived presigned GET access to objects returned by the existing authenticated object-listing flow.
+Application services should not depend directly on Express `req`/`res`.
 
-A presigned URL is a cryptographically signed temporary URL granting a specific storage operation for a limited time. It is a bearer capability: anyone possessing an unexpired URL can use the granted operation. Never log complete signed URLs.
+Local HTTP startup must remain separate from Lambda application construction.
 
-For the initial implementation:
+Environment interpretation remains centralized.
 
-- preserve `GET /buckets/:Bucket/objects/:Prefix(*)`;
-- preserve the existing Entra authentication and trusted-user authorization boundary;
-- keep `wasabi.getListObjects()` as the storage listing operation;
-- add a focused storage signing operation such as `getObjectAccessUrl({ Bucket, Key })`;
-- use `GetObjectCommand` plus `@aws-sdk/s3-request-presigner` and the existing configured `S3Client`;
-- enrich only the final page returned to the client: add `AccessUrl` to each item in `Contents` in the service layer after listing;
-- do not add `AccessUrl` to `CommonPrefixes`;
-- do not put presigning inside `getListObjects()`, because `getTotalKeyCount()` also calls that function while walking pages and must not generate unused URLs;
-- use a fixed initial expiry of 3600 seconds;
-- do not add a configuration setting for the expiry yet;
-- do not perform `HeadObject` merely to generate a URL;
-- if signing fails, surface the failure through the existing error path; never fall back to a raw public Wasabi URL;
-- do not proxy file bytes through Lambda;
-- do not add a CDN;
-- do not make Wasabi objects private during this backend capability task;
-- do not modify the frontend during this backend task.
+Do not introduce speculative provider abstractions, dependency-injection frameworks, microservices, databases, queues, or new frameworks.
 
-The current frontend will ignore the additional `AccessUrl` property until the dedicated frontend task. This backend-first response enrichment preserves independent backend/frontend deployment.
+## Established security architecture
 
-Do not fix pagination, total-key counting, broad error handling, or unrelated storage behavior while adding presigned access.
+Microsoft Entra authentication is mandatory.
 
-## CORS
+Current request flow:
 
-CORS means Cross-Origin Resource Sharing. It is a browser cross-origin policy, not authentication or authorization.
+React/MSAL
+-> Microsoft Entra
+-> OAuth 2.0 API access token
+-> API Gateway
+-> Express token validation
+-> trusted-user authorization
+-> application/service layer
+-> Wasabi.
 
-Current broad CORS behavior is deferred debt. Do not tighten CORS unless explicitly scoped.
+Never create an unauthenticated fallback for `/buckets`.
 
-## Testing
+Never reintroduce:
 
-Authoritative unit regression:
+* API-key authentication;
+* MongoDB authentication;
+* bcrypt login;
+* UUID auth tokens;
+* optional Entra enforcement.
+
+Trusted-user authorization is an established production boundary.
+
+Do not redesign it during pagination work.
+
+## Established object security
+
+Wasabi objects are private.
+
+The backend generates short-lived presigned `AccessUrl` values after authentication and authorization.
+
+The frontend consumes those URLs.
+
+Never:
+
+* make objects publicly readable;
+* construct permanent public object URLs;
+* expose Wasabi credentials;
+* proxy file bytes through Lambda without an explicitly approved architectural reason.
+
+Preserve `AccessUrl` behavior during Phase 5.
+
+## Current pagination problem
+
+The current backend has two known problems.
+
+### Prefix correctness
+
+The full-count pagination path historically passes `Prefix` on the first storage request but loses it on continuation requests.
+
+Every request belonging to the same logical prefixed listing must preserve the original `Prefix`.
+
+Tests must reflect correct behavior, not preserve the defect.
+
+### Full-list count
+
+Normal browsing currently calculates `TotalKeyCount` by traversing the entire logical listing before retrieving the requested visible page.
+
+This causes navigation cost to grow with total folder size.
+
+Phase 5 will remove this architecture after the frontend no longer requires exact totals.
+
+Do not replace it with a database or another expensive exact-count mechanism.
+
+Native S3/Wasabi cursor pagination is the target model.
+
+## Phase 5 task sequence
+
+### Task 5A
+
+Fix Prefix handling only.
+
+Preserve the current API response and `TotalKeyCount`.
+
+Do not change frontend compatibility.
+
+### Task 5C
+
+After the frontend no longer relies on `TotalKeyCount`, remove the full-list count traversal.
+
+Normal page requests should require approximately one `ListObjectsV2` page plus local presigned-URL generation.
+
+Do not perform Task 5C during Task 5A unless explicitly requested.
+
+## Continuation-token rules
+
+S3/Wasabi continuation tokens are opaque values.
+
+Do not parse or infer structure from them.
+
+When handling token input:
+
+* preserve values exactly;
+* allow normal URL/query decoding at the HTTP boundary;
+* do not log tokens unnecessarily;
+* pass the token to the storage adapter unchanged.
+
+## Prefix/key handling
+
+Object prefixes and keys may contain:
+
+* spaces;
+* Unicode;
+* `%`;
+* `#`;
+* `?`;
+* other URL-sensitive characters.
+
+Do not assume simple ASCII filenames.
+
+Do not introduce unsafe manual URL assumptions at the backend boundary.
+
+## Page-size validation
+
+Where explicitly included in an approved Phase 5 task, validate page-size inputs simply and explicitly.
+
+Do not add a validation framework solely for one integer.
+
+A page size should be:
+
+* a valid integer;
+* greater than zero;
+* within an application-approved upper bound.
+
+Do not rely solely on Wasabi/S3 to reject malformed user input.
+
+## Tests
+
+Standard regression command:
 
 `npm test`
-
-Use Node.js 24.
-
-Do not delete, skip, or weaken tests merely to make changes pass.
-
-Preserve coverage around:
-
-- Entra being mandatory with no disable/fallback path;
-- token signature/issuer/audience/expiry/scope validation;
-- `401` versus `403`;
-- Lambda-compatible `jose` loading;
-- trusted-user `oid`/tenant authorization;
-- fail-closed required authentication configuration;
-- `/auth` remaining unavailable;
-- existing Wasabi listing and total-key-count behavior.
-
-For presigned access, add focused tests around the storage signer and service enrichment. Use fake URLs/credentials only. Do not place complete real signed URLs or real credentials in fixtures or logs.
 
 Safe integration regression:
 
 `npm run test:integration`
 
-Protected bucket requests use a short-lived Entra access token supplied at runtime through `INTEGRATION_ACCESS_TOKEN`. Never commit, persist, or log the token.
+For behavior-preserving backend changes:
 
-Bruno reports must continue suppressing request/response bodies and headers, and production-target guards must remain intact.
+1. establish baseline test state where practical;
+2. make the smallest requested change;
+3. run unit tests again;
+4. preserve unrelated behavior.
 
-Do not automate username/password authentication to obtain Entra test tokens.
+For the Prefix fix, ensure tests cover a multi-page prefixed listing and verify that `Prefix` is present on continuation requests.
 
-## Deployment safety
+When `TotalKeyCount` is eventually removed, update tests deliberately rather than weakening assertions.
+
+Do not delete or skip tests merely to make changes pass.
+
+## Bruno
+
+Bruno integration tests are part of deployment validation.
+
+Keep production-target guards intact.
+
+Do not commit access tokens.
+
+Do not weaken Entra-aware integration safeguards.
+
+Modify Bruno expectations only when an explicitly approved API-contract change requires it.
+
+## Deployment
+
+Deployment is currently manual.
 
 Do not deploy unless explicitly requested.
 
-For material backend changes:
+Use:
 
-1. run unit tests;
-2. deploy to `test` only when explicitly authorized;
-3. run the Entra-aware Bruno regression against the deployed `test` API;
-4. perform relevant functional checks;
-5. deploy to `prd` only after explicit approval.
+`test`
 
-Entra authentication is mandatory in every deployed stage. Do not use disabling Entra as rollback. Roll back to a reviewed known-good application/deployment version while preserving the Entra security boundary.
+before:
 
-Untracked local deployment files are `.env.test` and `.env.prd`.
+`prd`
 
-Explicit deployment scripts:
+for material changes.
 
-- `npm run deploy:test`;
-- `npm run deploy:prd`.
+Serverless Framework v4 remains the deployment and IaC mechanism.
 
-Do not add a generic deploy command that can silently target production.
+Do not replace Serverless with CDK, Terraform, SAM, or another framework during Phase 5.
 
-AWS deployment credentials belong to the AWS credential provider chain/profile, not application dotenv files.
+CI/CD has not yet been implemented.
+
+Do not assume GitHub Actions currently performs deployment.
+
+## Presigned URL expiry
+
+Current production code uses a one-hour presigned URL lifetime.
+
+Do not change this during pagination work unless explicitly requested.
+
+Do not build URL-refresh infrastructure as part of Phase 5.
 
 ## Deferred work
 
-Do not opportunistically implement outside the explicitly requested task:
+Do not opportunistically address:
 
-- frontend migration to `AccessUrl` before its dedicated task;
-- Wasabi bucket/object privacy cutover;
-- CORS hardening;
-- Wasabi pagination/performance fixes;
-- custom-domain/CDN/file-proxy work for enterprise network compatibility;
-- API Gateway REST -> HTTP API migration;
-- Lambda authorizers;
-- Express 5;
-- ESM;
-- TypeScript;
-- Kong;
-- CI/CD;
-- broad dependency modernization.
+* thumbnail generation;
+* SNS/SQS image processing;
+* broad CORS;
+* CI/CD;
+* production observability;
+* API Gateway REST -> HTTP API;
+* central error refactoring;
+* Create React App;
+* frontend UI redesign;
+* database introduction;
+* Entra app roles;
+* Kong.
 
-Future CI/CD may use GitHub Actions, protected branches, automated tests/builds, test deployment, integration checks, controlled production approval, and GitHub OIDC for short-lived AWS credentials. OIDC means OpenID Connect. Do not implement CI/CD unless explicitly requested.
+AWS SDK v3 migration is already complete.
+
+Legacy MongoDB authentication is already removed.
+
+Do not repeat completed modernization work.
+
+## Change discipline
+
+For every task:
+
+1. inspect the current implementation and tests;
+2. confirm the exact defect/requirement;
+3. make the smallest correct change;
+4. preserve security boundaries;
+5. preserve unrelated API behavior;
+6. avoid unrelated cleanup;
+7. keep commits reviewable;
+8. run required tests;
+9. stop when the requested task is complete.
 
 ## Completion report
 
-For every Copilot implementation task, report:
+At the end of each implementation task report:
 
-- current branch;
-- commits created;
-- files changed/deleted;
-- behavior/configuration changed;
-- baseline and final `npm test` results;
-- `git diff --check` result;
-- integration result when applicable;
-- deployment performed, if explicitly authorized;
-- confirmation that no secret/token or complete real signed URL was committed or logged;
-- any issue directly relevant to the requested task;
-- recommended next task.
+* branch used;
+* files changed;
+* exact behavior changed;
+* API compatibility impact;
+* tests added/updated;
+* baseline/final `npm test` result;
+* integration result if run;
+* deployment performed if explicitly authorized;
+* rollback/compatibility concern;
+* recommended next task.
 
-Stop after the requested task.
+Do not automatically implement the next task.

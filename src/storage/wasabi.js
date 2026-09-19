@@ -135,6 +135,7 @@ const getTotalKeyCount = async (params) => {
   while (IsTruncated) {
     ListObjects = await getListObjects({
       Bucket,
+      Prefix,
       ContinuationToken: NextContinuationToken,
     });
     IsTruncated = ListObjects.IsTruncated;

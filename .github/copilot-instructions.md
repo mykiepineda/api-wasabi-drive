@@ -1,45 +1,69 @@
-# Wasabi Drive API - GitHub Copilot Instructions
+# Wasabi Drive API — GitHub Copilot Instructions
 
 ## Current project phase
 
 Wasabi Drive is an existing production application.
 
-The current backend modernization phase is:
+The current modernization phase is:
 
-**Phase 5 — Browse Correctness and Pagination Scalability.**
+**Phase 6 — CI/CD and Deployment Safety.**
+
+CI/CD = Continuous Integration / Continuous Delivery or Deployment.
 
 The active implementation task is:
 
-**Task 5C — Remove full-list `TotalKeyCount` traversal.**
+**Task 6A — Backend pull-request CI.**
 
 The developer is the technical owner and architectural decision-maker.
-Copilot is an implementation assistant. Implement only the explicitly requested task; do not independently redesign the application or broaden scope.
 
-Task 5A is complete: continuation requests used by the old count path preserve `Prefix` correctly.
+Copilot is a narrow implementation assistant. Implement only the explicitly requested task. Do not independently redesign the application, change deployment architecture, alter authentication, or continue into later Phase 6 work.
 
-Task 5B is complete and production-validated: the frontend now uses native cursor pagination based on `IsTruncated`, `NextContinuationToken`, and local previous-token history. It no longer requires exact `TotalKeyCount`.
-
-This production compatibility milestone is what makes Task 5C safe to implement now.
+Do not automatically continue to Task 6B or any deployment task after Task 6A.
 
 ## Branch and change safety
 
 `master` is the protected integration/release branch.
 
-For Task 5C use the focused branch:
+For Task 6A use:
 
-`refactor/remove-total-key-count`
+`ci/backend-pr-checks`
 
-Never commit implementation changes directly to `master`.
+Never commit implementation work directly to `master`.
 
-Do not automatically continue to another task after Task 5C.
+Do not deploy unless explicitly requested.
 
-Keep commits focused and reviewable. Avoid unrelated cleanup, formatting changes, dependency upgrades, framework changes, or architectural redesign.
+Keep commits focused and reviewable.
 
-Do not deploy unless explicitly requested by the technical owner.
+Avoid unrelated:
 
-## Current production architecture
+* application refactoring;
+* dependency upgrades;
+* formatting changes;
+* security architecture changes;
+* framework changes;
+* API contract changes;
+* deployment changes.
 
-Backend:
+## Task 6A objective
+
+Introduce GitHub Actions pull-request validation for the backend repository with **zero deployment capability**.
+
+The workflow must prove that the backend can be reproduced and tested from a clean CI environment.
+
+Target flow:
+
+checkout
+-> Node.js 24
+-> `npm ci`
+-> `npm test`
+
+This is a Continuous Integration check only.
+
+It must not deploy anything.
+
+## Current repository facts
+
+The current backend uses:
 
 * Node.js 24;
 * Express 4;
@@ -48,11 +72,31 @@ Backend:
 * API Gateway REST API;
 * Serverless Framework v4;
 * CloudFormation;
-* AWS SDK for JavaScript v3 (Software Development Kit; the code library used to call the S3-compatible storage API);
-* Wasabi S3-compatible object storage (S3 = Amazon Simple Storage Service API compatibility);
-* `test` and `prd` stages.
+* AWS SDK for JavaScript v3;
+* Wasabi S3-compatible private storage;
+* Microsoft Entra authentication;
+* `test` and `prd` deployment stages.
 
-Preserve the established dependency direction:
+`package.json` currently declares Node:
+
+`>=24 <25`
+
+Existing relevant scripts include:
+
+* `npm test`;
+* `npm run test:integration`;
+* `npm run deploy:test`;
+* `npm run deploy:prd`.
+
+Task 6A must execute only the normal unit/regression test command:
+
+`npm test`
+
+Do not run deployment scripts or the Bruno integration suite.
+
+## Architecture invariants
+
+Preserve the current backend dependency direction:
 
 HTTP / Express route
 -> application/service layer
@@ -60,307 +104,178 @@ HTTP / Express route
 -> AWS SDK
 -> Wasabi.
 
-AWS SDK calls belong in the storage/infrastructure layer.
+Do not alter application architecture for CI.
 
-Application services must not depend directly on Express `req`/`res`.
+Local HTTP startup remains separate from Lambda application construction.
 
-Local HTTP startup must remain separate from Lambda application construction.
+Configuration remains centralized.
 
-Configuration interpretation remains centralized.
+## Security invariants
 
-Do not introduce speculative provider abstractions, dependency-injection frameworks, microservices, databases, caches, queues, or new frameworks.
+Microsoft Entra authentication remains mandatory.
 
-## Established authentication and authorization
-
-Microsoft Entra authentication is mandatory.
-
-Current request flow:
-
-React/MSAL
--> Microsoft Entra
--> OAuth 2.0 API access token
--> API Gateway
--> Express token validation
--> trusted-user authorization
--> application/service layer
--> Wasabi.
-
-MSAL = Microsoft Authentication Library. OAuth 2.0 is the access-token protocol used by the frontend to call the protected backend.
-
-Authentication proves the caller identity. Authorization determines whether that authenticated identity is allowed to use Wasabi Drive. Preserve both boundaries.
-
-Never create an unauthenticated fallback for `/buckets`.
-
-Never reintroduce:
-
-* API-key authentication;
-* MongoDB authentication;
-* bcrypt login;
-* UUID authentication tokens;
-* optional Entra enforcement.
-
-Trusted-user authorization is an established production boundary. Do not redesign it during Task 5C.
-
-## Established object security
-
-Wasabi objects are private.
-
-The backend generates short-lived presigned `AccessUrl` values only after authentication and authorization. The frontend consumes those URLs directly.
+The backend remains the security authority.
 
 Never:
 
-* make Wasabi objects publicly readable;
-* construct permanent public object URLs;
+* add an authentication bypass for CI;
+* weaken trusted-user authorization;
+* reintroduce API-key authentication;
+* reintroduce MongoDB/custom-password authentication;
 * expose Wasabi credentials;
-* proxy file bytes through Lambda without an explicitly approved architectural reason.
+* make Wasabi objects public;
+* commit bearer/access tokens;
+* commit AWS credentials;
+* commit Microsoft user credentials;
+* add CI-only backdoors.
 
-Preserve current `AccessUrl` generation and expiry behavior during Task 5C.
+Task 6A must not require:
 
-## Task 5C objective
+* AWS credentials;
+* Wasabi credentials;
+* Firebase credentials;
+* Serverless access credentials;
+* Microsoft Entra user credentials;
+* access tokens.
 
-Normal bucket/folder browsing currently does two logically separate operations:
+Unit tests must continue using their existing controlled mocks/test configuration.
 
-1. traverse the entire logical listing to calculate exact `TotalKeyCount`;
-2. request the visible page and presign the objects on that page.
+## Required workflow
 
-The first operation is no longer required by the production frontend and makes browse cost grow with total folder size.
+Create a workflow under:
 
-Task 5C removes that full-list counting operation.
+`.github/workflows/`
 
-Target normal browse cost:
+Use a clear filename such as:
 
-* approximately one `ListObjectsV2` request for the requested page;
-* local presigning for objects returned on that page.
+`.github/workflows/backend-pr-checks.yml`
 
-Do not replace `TotalKeyCount` with a database, cache, counter table, background job, or another exact-count mechanism.
+The workflow must:
 
-Exact totals are intentionally being removed from the normal browse contract.
+* run for pull requests targeting `master`;
+* use the normal `pull_request` event;
+* use Node.js 24;
+* use `npm ci`;
+* run `npm test`;
+* use a GitHub-hosted Ubuntu runner;
+* explicitly use least-privilege GitHub token permissions;
+* have no deployment steps;
+* consume no repository or environment secrets;
+* request no AWS OIDC identity-token permission;
+* have no Firebase capability;
+* have no Serverless deployment capability.
 
-## Required API contract after Task 5C
+Do not use `pull_request_target`.
 
-The object-listing response must continue to preserve native Wasabi/S3 pagination metadata required by the production frontend, including when supplied by Wasabi:
+Do not use `npm install` as a fallback.
 
-* `IsTruncated`;
-* `NextContinuationToken`;
-* `ContinuationToken`;
-* `KeyCount`;
-* `MaxKeys`;
-* `Prefix`;
-* `CommonPrefixes`;
-* `Contents`.
+Do not suppress or bypass clean-install failures.
 
-Do not synthesize continuation tokens.
+Do not run `npm run test:integration`.
 
-Do not calculate page counts.
+Do not deploy the `test` or `prd` stages.
 
-Do not return `TotalKeyCount` from the normal object-listing response after this task.
+## GitHub Action dependency security
 
-`Contents` objects must continue to receive backend-generated `AccessUrl` values exactly as they do today.
+Prefer official GitHub-maintained actions.
 
-Common prefixes must not be presigned.
+When practical, pin workflow action dependencies to reviewed full commit SHAs and include a comment identifying the corresponding release version.
 
-Empty/absent `Contents` behavior must remain valid.
+Do not introduce unnecessary third-party actions.
 
-## Required implementation boundary
+## Package and lockfile handling
 
-Inspect first, then make the smallest changes needed. Expected relevant files include:
+`npm ci` is intentionally the reproducibility gate.
 
-* `src/service/buckets.js`;
-* `src/storage/wasabi.js`;
-* `test/buckets.service.test.js`;
-* `test/wasabi.storage.test.js`;
-* `bruno/wasabi-drive-api/buckets/list-objects.bru`;
-* `bruno/wasabi-drive-api/buckets/list-objects-next-page.bru`.
+Do not change `package.json` or `package-lock.json` merely to make CI green.
 
-Other files may be changed only if the existing implementation genuinely requires it for Task 5C.
+If `npm ci` fails:
 
-### Service layer
+1. inspect and report the actual cause;
+2. determine whether `package.json` and `package-lock.json` disagree;
+3. determine whether a dependency is incompatible with Node.js 24;
+4. make only the minimum justified package/lockfile correction if genuinely required.
 
-Remove the call to `wasabi.getTotalKeyCount()` from normal browsing.
+Do not replace `npm ci` with `npm install`.
 
-Call `wasabi.getListObjects(params)` only once for the visible page.
+Do not delete tests or weaken assertions to obtain a passing workflow.
 
-Return the storage listing metadata without adding `TotalKeyCount`.
+## Expected files
 
-Preserve the current `AccessUrl` enrichment for returned objects.
+Expected Task 6A changes are limited to:
 
-### Storage layer
+* `.github/workflows/backend-pr-checks.yml`;
+* this `.github/copilot-instructions.md` update.
 
-If `getTotalKeyCount()` has no remaining production callers after the service change, remove the function and remove it from module exports.
+Change other files only if an actual clean-install or Node-24 compatibility defect is demonstrated and explain why the additional change is required before making it.
 
-Do not retain dead count traversal code for hypothetical future use.
+Application source changes are not expected.
 
-Do not change `getListObjects()` continuation-token or prefix behavior except where required for the explicitly approved page-size validation below.
+## Validation
 
-### Tests
+Before completing Task 6A, verify:
 
-Update tests deliberately to describe the new contract.
+1. the workflow triggers for pull requests targeting `master`;
+2. Node.js 24 is selected;
+3. dependency installation uses exactly `npm ci`;
+4. tests use the existing `npm test`;
+5. the workflow does not execute Serverless;
+6. the workflow does not execute Bruno integration tests;
+7. the workflow declares no AWS OIDC permission;
+8. no secrets or cloud credentials are referenced;
+9. no application runtime behavior has changed.
 
-Do not merely delete assertions. Replace old count-based assertions with useful assertions about:
+Run from a clean Node.js 24 environment:
 
-* exactly one visible-page listing request at service level;
-* native pagination metadata being passed through;
-* `TotalKeyCount` being absent;
-* `AccessUrl` still being added to each returned object;
-* common prefixes not being signed;
-* empty/absent `Contents` remaining valid;
-* signing failures still propagating according to existing behavior.
+`npm ci`
 
-Remove obsolete storage tests for `getTotalKeyCount()` when the function is removed.
-
-Do not weaken authentication or trusted-user tests.
-
-## Continuation-token rules
-
-S3/Wasabi continuation tokens are opaque cursor values.
-
-Do not:
-
-* parse them;
-* infer structure from them;
-* modify them;
-* decode/re-encode them in the service or storage layers;
-* log them unnecessarily.
-
-Normal URL/query decoding occurs at the HTTP boundary. Pass the resulting token through the application and storage layers unchanged.
-
-## Prefix and key handling
-
-Prefixes and object keys may contain spaces, Unicode, `%`, `#`, `?`, and other URL-sensitive characters.
-
-Do not add manual URL assumptions or key transformations in Task 5C.
-
-Preserve the current `Prefix` exactly through the service/storage call path.
-
-## Optional secondary item: simple `MaxKeys` validation
-
-Simple page-size validation is approved within Task 5C only if it remains a small, focused change after the count traversal is removed.
-
-If implemented:
-
-* validate only when `MaxKeys` is supplied;
-* require a whole decimal integer;
-* require `MaxKeys > 0`;
-* require `MaxKeys <= 1000`;
-* reject partial numeric strings such as `25abc` rather than accepting them through `parseInt`;
-* absence of `MaxKeys` must remain allowed;
-* do not introduce a validation framework;
-* place the rule at an application/API contract boundary rather than relying solely on Wasabi to reject malformed input;
-* add focused unit tests for valid, absent, zero, negative, non-integer, partial-string, and over-limit values.
-
-If this validation materially expands the diff or conflicts with an existing API contract discovered during inspection, do not force it. Complete the core Task 5C change and report the validation issue separately.
-
-Do not change continuation-token validation; tokens are opaque.
-
-## Bruno integration contract
-
-Bruno integration tests are part of deployment validation.
-
-The existing list-object Bruno requests currently assert that `TotalKeyCount` exists. Update those expectations for the intentional Task 5C contract change.
-
-For object-listing responses, useful integration assertions include:
-
-* HTTP 200;
-* `TotalKeyCount` is absent;
-* native cursor metadata such as `IsTruncated` and `KeyCount` is present;
-* when `IsTruncated === true`, `NextContinuationToken` is present.
-
-Do not make integration tests depend on exact object totals.
-
-Keep production-target guards intact.
-
-Do not commit access tokens or other secrets.
-
-Do not weaken Entra-aware integration safeguards.
-
-## Required local gates
-
-Before making changes, establish the current unit-test baseline where practical:
+then:
 
 `npm test`
 
-After implementation run:
+If clean installation or tests fail, diagnose the failure rather than bypassing it.
 
-`npm test`
+## Non-goals
 
-Do not deploy as part of implementation.
+Do not implement during Task 6A:
 
-Once the technical owner later deploys Task 5C to the `test` stage, the expected integration gate is:
-
-`npm run test:integration`
-
-## Deployment and rollback safety
-
-Deployment remains manual.
-
-Do not deploy unless explicitly requested.
-
-For Task 5C the intended rollout is:
-
-backend `test`
--> Bruno regression
--> manual frontend browse regression against `test`
--> explicit production approval
--> backend `prd`
--> production validation.
-
-The production frontend has already been upgraded to the cursor-based Task 5B contract.
-
-After Task 5C is deployed, the older pre-5B frontend may no longer be compatible because it required `TotalKeyCount`.
-
-Therefore rollback order after Task 5C must be documented and preserved:
-
-1. rollback backend first so the old response contract containing `TotalKeyCount` is restored;
-2. only then rollback frontend if a frontend rollback is also required.
-
-Never recommend rolling the frontend back first while the Task 5C backend is still serving the new response contract.
-
-Serverless Framework v4 remains the deployment and Infrastructure as Code (IaC) mechanism. IaC means deployment infrastructure is defined in version-controlled configuration.
-
-Do not replace Serverless with CDK, Terraform, SAM, or another framework during Phase 5.
-
-CI/CD (Continuous Integration / Continuous Delivery) has not yet been implemented. Do not assume GitHub Actions performs deployment.
-
-## Phase 5 non-goals
-
-Do not during Task 5C:
-
-* change Microsoft Entra/MSAL architecture;
-* change trusted-user authorization;
-* change private-object security;
-* change presigned URL architecture or expiry;
-* change API Gateway REST API;
-* add Lambda authorizers;
-* add a database or cache;
-* add thumbnail generation;
-* add SNS/SQS/image-processing workflows;
-* implement CI/CD;
-* tighten CORS;
-* migrate the frontend or Create React App;
-* redesign error handling broadly;
-* add broad observability work;
-* perform unrelated dependency upgrades or code cleanup.
+* backend test deployment;
+* AWS OIDC;
+* Serverless deployment authentication;
+* Bruno automation;
+* frontend CI;
+* Firebase deployment;
+* frontend environment configuration;
+* production promotion;
+* GitHub Environment configuration;
+* CORS changes;
+* error-handling refactors;
+* MaxKeys changes;
+* pagination changes;
+* MSAL changes;
+* authentication changes;
+* observability changes;
+* thumbnail processing;
+* dependency modernization.
 
 ## Completion report
 
-At completion, stop and report:
+Stop after Task 6A.
+
+Report:
 
 * branch used;
+* workflow file added;
+* trigger conditions;
+* Node.js version;
+* commands executed;
+* whether clean `npm ci` succeeded;
+* `npm test` result;
+* any dependency or lockfile issue discovered;
+* workflow permissions;
+* confirmation that no deployment credentials or deployment capability exist;
 * files changed;
-* exact full-count traversal removed;
-* confirmation that normal browsing performs only the requested page listing at the service/storage boundary;
-* confirmation that `getTotalKeyCount()` was removed if unused;
-* new object-listing response contract;
-* confirmation that native cursor metadata is preserved;
-* confirmation that `AccessUrl` behavior is preserved;
-* whether `MaxKeys` validation was implemented and its exact contract;
-* tests changed/added;
-* baseline `npm test` result;
-* final `npm test` result;
-* Bruno expectations changed;
-* deployment impact;
-* compatibility impact;
-* rollback order;
-* anything requiring technical-owner review.
+* commit structure;
+* any remaining review concern.
 
-Do not continue to another phase or deploy automatically.
+Do not automatically start frontend CI or cloud deployment.

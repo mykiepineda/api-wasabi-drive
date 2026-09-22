@@ -9,7 +9,6 @@ const storage = {
   getBucketRegion: () => Promise.resolve({ region: "us-east-2" }),
   getListObjects: () => Promise.resolve({ Contents: [] }),
   getObjectAccessUrl: () => Promise.resolve("https://example.test/fake-object-url"),
-  getTotalKeyCount: () => Promise.resolve(0),
 };
 
 require.cache[storagePath] = {
@@ -49,18 +48,21 @@ test("getBucketRegion forwards the bucket name", async () => {
   assert.equal(receivedName, "documents");
 });
 
-test("getListObjects combines objects with the total key count", async () => {
-  let countParams;
+test("getListObjects delegates once and preserves listing metadata while signing objects", async () => {
   let listParams;
-  storage.getTotalKeyCount = (params) => {
-    countParams = params;
-    return Promise.resolve(12);
-  };
+  let listCallCount = 0;
   storage.getListObjects = (params) => {
     listParams = params;
+    listCallCount += 1;
     return Promise.resolve({
       Contents: [{ Key: "file.txt", Size: 42, ETag: "etag" }],
       CommonPrefixes: [{ Prefix: "nested/" }],
+      IsTruncated: true,
+      NextContinuationToken: "next-token",
+      ContinuationToken: "current-token",
+      KeyCount: 1,
+      MaxKeys: 25,
+      Prefix: "reports/",
     });
   };
   storage.getObjectAccessUrl = ({ Bucket, Key }) => {
@@ -73,15 +75,19 @@ test("getListObjects combines objects with the total key count", async () => {
   assert.deepEqual(await buckets.getListObjects(params), {
     Contents: [{ Key: "file.txt", Size: 42, ETag: "etag", AccessUrl: "https://example.test/file.txt" }],
     CommonPrefixes: [{ Prefix: "nested/" }],
-    TotalKeyCount: 12,
+    IsTruncated: true,
+    NextContinuationToken: "next-token",
+    ContinuationToken: "current-token",
+    KeyCount: 1,
+    MaxKeys: 25,
+    Prefix: "reports/",
   });
-  assert.deepEqual(countParams, params);
   assert.equal(listParams, params);
+  assert.equal(listCallCount, 1);
 });
 
 test("getListObjects signs multiple objects without signing common prefixes", async () => {
   const received = [];
-  storage.getTotalKeyCount = () => Promise.resolve(3);
   storage.getListObjects = () => Promise.resolve({
     Contents: [{ Key: "one.txt", Size: 1 }, { Key: "two.txt", Size: 2 }],
     CommonPrefixes: [{ Prefix: "folder/" }],
@@ -97,7 +103,6 @@ test("getListObjects signs multiple objects without signing common prefixes", as
       { Key: "two.txt", Size: 2, AccessUrl: "https://example.test/two.txt" },
     ],
     CommonPrefixes: [{ Prefix: "folder/" }],
-    TotalKeyCount: 3,
   });
   assert.deepEqual(received, [
     { Bucket: "documents", Key: "one.txt" },
@@ -106,7 +111,6 @@ test("getListObjects signs multiple objects without signing common prefixes", as
 });
 
 test("getListObjects preserves absent or empty contents", async () => {
-  storage.getTotalKeyCount = () => Promise.resolve(0);
   storage.getObjectAccessUrl = () => {
     throw new Error("should not sign an empty page");
   };
@@ -114,18 +118,16 @@ test("getListObjects preserves absent or empty contents", async () => {
   storage.getListObjects = () => Promise.resolve({ IsTruncated: false });
   assert.deepEqual(await buckets.getListObjects({ Bucket: "documents" }), {
     IsTruncated: false,
-    TotalKeyCount: 0,
   });
 
-  storage.getListObjects = () => Promise.resolve({ Contents: [], TotalKeyCount: 9 });
+  storage.getListObjects = () => Promise.resolve({ Contents: [], KeyCount: 0 });
   assert.deepEqual(await buckets.getListObjects({ Bucket: "documents" }), {
     Contents: [],
-    TotalKeyCount: 0,
+    KeyCount: 0,
   });
 });
 
 test("getListObjects propagates signing failures", async () => {
-  storage.getTotalKeyCount = () => Promise.resolve(1);
   storage.getListObjects = () => Promise.resolve({ Contents: [{ Key: "file.txt" }] });
   storage.getObjectAccessUrl = () => Promise.reject(new Error("signing failed"));
 

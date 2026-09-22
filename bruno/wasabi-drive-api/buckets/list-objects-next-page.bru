@@ -23,8 +23,13 @@ query {
 }
 
 tests {
-  test("returns the next object listing page", function() {
+  test("returns the next cursor-paginated object listing page", function() {
     expect(res.status).to.equal(200);
-    expect(res.body).to.have.property("TotalKeyCount");
+    expect(res.body).to.not.have.property("TotalKeyCount");
+    expect(res.body).to.have.property("IsTruncated");
+    expect(res.body).to.have.property("KeyCount");
+    if (res.body.IsTruncated === true) {
+      expect(res.body.NextContinuationToken).to.be.a("string").and.not.empty;
+    }
   });
 }

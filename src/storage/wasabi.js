@@ -123,32 +123,9 @@ const getObjectAccessUrl = ({ Bucket, Key }) => {
   });
 };
 
-const getTotalKeyCount = async (params) => {
-  const { Bucket, Prefix } = params;
-
-  let ListObjects = await getListObjects({ Bucket, Prefix });
-
-  let IsTruncated = ListObjects.IsTruncated;
-  let TotalKeyCount = ListObjects.KeyCount;
-  let NextContinuationToken = ListObjects.NextContinuationToken;
-
-  while (IsTruncated) {
-    ListObjects = await getListObjects({
-      Bucket,
-      Prefix,
-      ContinuationToken: NextContinuationToken,
-    });
-    IsTruncated = ListObjects.IsTruncated;
-    TotalKeyCount = TotalKeyCount + ListObjects.KeyCount;
-    NextContinuationToken = ListObjects.NextContinuationToken;
-  }
-  return TotalKeyCount;
-};
-
 module.exports = {
   getListBuckets,
   getBucketRegion,
   getListObjects,
   getObjectAccessUrl,
-  getTotalKeyCount,
 };

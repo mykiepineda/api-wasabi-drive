@@ -9,20 +9,14 @@ const getBucketRegion = (name) => {
 };
 
 const getListObjects = async (params) => {
-  const TotalKeyCount = await wasabi.getTotalKeyCount({
-    Bucket: params.Bucket,
-    Prefix: params.Prefix,
-  });
-
   const ListObjects = await wasabi.getListObjects(params);
-  const response = { ...ListObjects, TotalKeyCount };
 
   if (!ListObjects.Contents?.length) {
-    return response;
+    return ListObjects;
   }
 
   return {
-    ...response,
+    ...ListObjects,
     Contents: await Promise.all(ListObjects.Contents.map(async (object) => ({
       ...object,
       AccessUrl: await wasabi.getObjectAccessUrl({

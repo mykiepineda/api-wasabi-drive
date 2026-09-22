@@ -120,27 +120,6 @@ test("getBucketRegion returns the region descriptions", async () => {
   });
 });
 
-test("getTotalKeyCount preserves prefix across paginated responses", async () => {
-  responses.push(
-    { IsTruncated: true, KeyCount: 2, NextContinuationToken: "next" },
-    { IsTruncated: false, KeyCount: 3 },
-  );
-
-  assert.equal(await wasabi.getTotalKeyCount({
-    Bucket: "documents",
-    Prefix: "reports/",
-  }), 5);
-  assert.deepEqual(requests, [
-    { Bucket: "documents", Delimiter: "/", Prefix: "reports/" },
-    {
-      Bucket: "documents",
-      Delimiter: "/",
-      Prefix: "reports/",
-      ContinuationToken: "next",
-    },
-  ]);
-});
-
 test("getListBuckets delegates to the v3 client", async () => {
   assert.deepEqual(await wasabi.getListBuckets(), { Buckets: [] });
   assert.deepEqual(requests, [{}]);

@@ -5,6 +5,7 @@ const Module = require("node:module");
 const wasabiPath = require.resolve("../src/storage/wasabi");
 const originalLoad = Module._load;
 const responses = [];
+const locationResponses = [];
 const requests = [];
 const signedUrlRequests = [];
 
@@ -38,12 +39,13 @@ class S3Client {
   }
 
   send(command) {
-    requests.push(command.input);
+    requests.push({ client: this, command });
     if (command instanceof ListBucketsCommand) {
       return Promise.resolve({ Buckets: [] });
     }
     if (command instanceof GetBucketLocationCommand) {
-      return Promise.resolve({ LocationConstraint: "us-east-2" });
+      const response = locationResponses.shift();
+      return response ? response() : Promise.resolve({ LocationConstraint: "us-east-2" });
     }
     return Promise.resolve(responses.shift());
   }
@@ -89,6 +91,7 @@ test.after(() => {
 
 test.beforeEach(() => {
   responses.length = 0;
+  locationResponses.length = 0;
   requests.length = 0;
   signedUrlRequests.length = 0;
 });
@@ -97,19 +100,22 @@ test("getListObjects maps request parameters for S3", async () => {
   responses.push({ KeyCount: 0 });
 
   await wasabi.getListObjects({
-    Bucket: "documents",
+    Bucket: "same-region-documents",
     Prefix: "reports/",
     MaxKeys: "25",
     ContinuationToken: "token",
   });
 
-  assert.deepEqual(requests, [{
-    Bucket: "documents",
+  const listRequest = requests.find(({ command }) => command instanceof ListObjectsV2Command);
+  assert.deepEqual(listRequest.command.input, {
+    Bucket: "same-region-documents",
     Delimiter: "/",
     Prefix: "reports/",
     MaxKeys: 25,
     ContinuationToken: "token",
-  }]);
+  });
+  assert.equal(listRequest.client.options.region, "us-east-2");
+  assert.equal(listRequest.client.options.endpoint, "https://example.test");
 });
 
 test("getBucketRegion returns the region descriptions", async () => {
@@ -122,12 +128,12 @@ test("getBucketRegion returns the region descriptions", async () => {
 
 test("getListBuckets delegates to the v3 client", async () => {
   assert.deepEqual(await wasabi.getListBuckets(), { Buckets: [] });
-  assert.deepEqual(requests, [{}]);
+  assert.deepEqual(requests.map(({ command }) => command.input), [{}]);
 });
 
-test("getObjectAccessUrl signs the requested object with the configured client", async () => {
+test("getObjectAccessUrl signs a same-region object with the configured client", async () => {
   const result = await wasabi.getObjectAccessUrl({
-    Bucket: "documents",
+    Bucket: "same-region-signed-documents",
     Key: "reports/file.txt",
   });
 
@@ -135,9 +141,91 @@ test("getObjectAccessUrl signs the requested object with the configured client",
   assert.equal(signedUrlRequests.length, 1);
   assert.ok(signedUrlRequests[0].command instanceof GetObjectCommand);
   assert.deepEqual(signedUrlRequests[0].command.input, {
-    Bucket: "documents",
+    Bucket: "same-region-signed-documents",
     Key: "reports/file.txt",
   });
   assert.deepEqual(signedUrlRequests[0].options, { expiresIn: 3600 });
   assert.ok(signedUrlRequests[0].client instanceof S3Client);
+  assert.equal(signedUrlRequests[0].client.options.region, "us-east-2");
+  assert.equal(signedUrlRequests[0].client.options.endpoint, "https://example.test");
+});
+
+test("getBucketRegion safely uses the configured region for an empty location", async () => {
+  locationResponses.push(() => Promise.resolve({ LocationConstraint: null }));
+
+  assert.deepEqual(await wasabi.getBucketRegion("empty-location-bucket"), {
+    region: "us-east-2",
+    longDescription: "Wasabi US East 1 (N. Virginia)",
+    shortDescription: "N. Virginia",
+  });
+});
+
+test("Wasabi 307 redirect resolves the regional client for listing and signed URLs, then reuses it", async () => {
+  const redirect = Object.assign(new Error("Temporary redirect"), {
+    name: "Error",
+    Code: "TemporaryRedirect",
+    $metadata: { httpStatusCode: 307 },
+    Endpoint: "klaris-icloud.s3.ap-southeast-2.wasabisys.com",
+  });
+  locationResponses.push(() => Promise.reject(redirect));
+  responses.push({ KeyCount: 0 });
+
+  assert.deepEqual(await wasabi.getBucketRegion("klaris-icloud"), {
+    region: "ap-southeast-2",
+    longDescription: "Wasabi AP Southeast 2 (Sydney)",
+    shortDescription: "Sydney",
+  });
+  await wasabi.getListObjects({ Bucket: "klaris-icloud" });
+  await wasabi.getObjectAccessUrl({ Bucket: "klaris-icloud", Key: "photo.jpg" });
+
+  const listRequest = requests.find(({ command }) => command instanceof ListObjectsV2Command);
+  const regionalClient = listRequest.client;
+  assert.deepEqual(regionalClient.options, {
+    endpoint: "https://s3.ap-southeast-2.wasabisys.com",
+    region: "ap-southeast-2",
+    credentials: { accessKeyId: "access-key", secretAccessKey: "secret-key" },
+  });
+  assert.equal(signedUrlRequests[0].client, regionalClient);
+  assert.equal(requests.filter(({ command }) => command instanceof GetBucketLocationCommand).length, 1);
+});
+
+test("failed bucket-region lookup is retryable", async () => {
+  const error = Object.assign(new Error("Storage unavailable"), {
+    name: "ServiceUnavailable",
+    $metadata: { httpStatusCode: 503 },
+  });
+  locationResponses.push(
+    () => Promise.reject(error),
+    () => Promise.resolve({ LocationConstraint: "ap-southeast-2" }),
+  );
+
+  await assert.rejects(wasabi.getBucketRegion("retryable-bucket"), (received) => received === error);
+  assert.deepEqual(await wasabi.getBucketRegion("retryable-bucket"), {
+    region: "ap-southeast-2",
+    longDescription: "Wasabi AP Southeast 2 (Sydney)",
+    shortDescription: "Sydney",
+  });
+  assert.equal(requests.filter(({ command }) => command instanceof GetBucketLocationCommand).length, 2);
+});
+
+test("malformed and unrelated redirect errors are propagated", async (t) => {
+  const errors = [
+    Object.assign(new Error("Foreign endpoint"), {
+      name: "TemporaryRedirect",
+      $metadata: { httpStatusCode: 307 },
+      Endpoint: "evil.example.test",
+    }),
+    Object.assign(new Error("Wrong status"), {
+      name: "TemporaryRedirect",
+      $metadata: { httpStatusCode: 301 },
+      Endpoint: "documents.s3.ap-southeast-2.wasabisys.com",
+    }),
+  ];
+
+  for (const [index, error] of errors.entries()) {
+    await t.test(`error ${index + 1}`, async () => {
+      locationResponses.push(() => Promise.reject(error));
+      await assert.rejects(wasabi.getBucketRegion(`invalid-redirect-${index}`), (received) => received === error);
+    });
+  }
 });

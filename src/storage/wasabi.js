@@ -56,17 +56,24 @@ const getRedirectRegion = (error, bucket) => {
 
   const escapedBucket = bucket.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = hostname.match(new RegExp(`^${escapedBucket}\\.s3\\.([a-z0-9]+(?:-[a-z0-9]+)*-[0-9]+)\\.wasabisys\\.com$`, "i"));
-  return match?.[1]?.toLowerCase();
+  if (match) {
+    return match[1].toLowerCase();
+  }
+
+  const usEastOneAlias = new RegExp(`^${escapedBucket}\\.s3\\.wasabisys\\.com$`, "i");
+  return usEastOneAlias.test(hostname) ? "us-east-1" : undefined;
 };
 
 const normalizeRegion = (locationConstraint) => {
-  if (typeof locationConstraint !== "string" || locationConstraint.trim() === "") {
-    return config.wasabi.region;
+  const location = typeof locationConstraint === "string" ? locationConstraint.trim() : "";
+  const closingTagIndex = location.lastIndexOf(">");
+  const region = (closingTagIndex >= 0 ? location.substring(closingTagIndex + 1) : location).trim();
+
+  if (!region) {
+    return "us-east-1";
   }
 
-  const region = locationConstraint.trim();
-  const closingTagIndex = region.lastIndexOf(">");
-  return (closingTagIndex >= 0 ? region.substring(closingTagIndex + 1) : region).trim() || config.wasabi.region;
+  return region === "EU" ? "eu-west-1" : region;
 };
 
 const discoverBucketRegion = async (name) => {

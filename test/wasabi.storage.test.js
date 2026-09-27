@@ -150,13 +150,32 @@ test("getObjectAccessUrl signs a same-region object with the configured client",
   assert.equal(signedUrlRequests[0].client.options.endpoint, "https://example.test");
 });
 
-test("getBucketRegion safely uses the configured region for an empty location", async () => {
-  locationResponses.push(() => Promise.resolve({ LocationConstraint: null }));
+test("getBucketRegion maps null, undefined, and empty locations to us-east-1", async (t) => {
+  for (const [index, locationConstraint] of [null, undefined, ""].entries()) {
+    await t.test(`empty location ${index + 1}`, async () => {
+      locationResponses.push(() => Promise.resolve({ LocationConstraint: locationConstraint }));
+      assert.deepEqual(await wasabi.getBucketRegion(`empty-location-bucket-${index}`), {
+        region: "us-east-1",
+      });
+    });
+  }
+});
 
-  assert.deepEqual(await wasabi.getBucketRegion("empty-location-bucket"), {
-    region: "us-east-2",
-    longDescription: "Wasabi US East 1 (N. Virginia)",
-    shortDescription: "N. Virginia",
+test("getBucketRegion maps the legacy EU constraint and preserves explicit regions", async () => {
+  locationResponses.push(
+    () => Promise.resolve({ LocationConstraint: "EU" }),
+    () => Promise.resolve({ LocationConstraint: "ap-southeast-2" }),
+  );
+
+  assert.deepEqual(await wasabi.getBucketRegion("legacy-eu-bucket"), {
+    region: "eu-west-1",
+    longDescription: "Wasabi EU West 1 (London)",
+    shortDescription: "London",
+  });
+  assert.deepEqual(await wasabi.getBucketRegion("explicit-region-bucket"), {
+    region: "ap-southeast-2",
+    longDescription: "Wasabi AP Southeast 2 (Sydney)",
+    shortDescription: "Sydney",
   });
 });
 
@@ -187,6 +206,54 @@ test("Wasabi 307 redirect resolves the regional client for listing and signed UR
   });
   assert.equal(signedUrlRequests[0].client, regionalClient);
   assert.equal(requests.filter(({ command }) => command instanceof GetBucketLocationCommand).length, 1);
+});
+
+test("getListObjects handles the first-operation Sydney redirect", async () => {
+  const bucket = "first-list-klaris";
+  const redirect = Object.assign(new Error("Temporary redirect"), {
+    name: "TemporaryRedirect",
+    $metadata: { httpStatusCode: 307 },
+    Endpoint: `${bucket}.s3.ap-southeast-2.wasabisys.com`,
+  });
+  locationResponses.push(() => Promise.reject(redirect));
+  responses.push({ KeyCount: 0 });
+
+  assert.deepEqual(await wasabi.getListObjects({ Bucket: bucket }), { KeyCount: 0 });
+
+  assert.deepEqual(requests.map(({ command }) => command.constructor), [
+    GetBucketLocationCommand,
+    ListObjectsV2Command,
+  ]);
+  const listRequest = requests.find(({ command }) => command instanceof ListObjectsV2Command);
+  assert.equal(listRequest.client.options.region, "ap-southeast-2");
+  assert.equal(listRequest.client.options.endpoint, "https://s3.ap-southeast-2.wasabisys.com");
+});
+
+test("US East 1 Wasabi redirect host forms resolve to the canonical regional client", async (t) => {
+  const endpointForms = [
+    (bucket) => `${bucket}.s3.us-east-1.wasabisys.com`,
+    (bucket) => `${bucket}.s3.wasabisys.com`,
+  ];
+
+  for (const [index, endpointForBucket] of endpointForms.entries()) {
+    await t.test(`endpoint form ${index + 1}`, async () => {
+      const bucket = `us-east-one-bucket-${index}`;
+      const redirect = Object.assign(new Error("Temporary redirect"), {
+        name: "TemporaryRedirect",
+        $metadata: { httpStatusCode: 307 },
+        Endpoint: endpointForBucket(bucket),
+      });
+      locationResponses.push(() => Promise.reject(redirect));
+      responses.push({ KeyCount: 0 });
+
+      assert.deepEqual(await wasabi.getBucketRegion(bucket), { region: "us-east-1" });
+      await wasabi.getListObjects({ Bucket: bucket });
+
+      const listRequest = requests.find(({ command }) => command instanceof ListObjectsV2Command);
+      assert.equal(listRequest.client.options.region, "us-east-1");
+      assert.equal(listRequest.client.options.endpoint, "https://s3.us-east-1.wasabisys.com");
+    });
+  }
 });
 
 test("failed bucket-region lookup is retryable", async () => {

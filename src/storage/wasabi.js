@@ -17,15 +17,115 @@ const s3 = new S3Client({
   },
 });
 
+const bucketRegions = new Map();
+const regionalClients = new Map([[config.wasabi.region, s3]]);
+
 const getListBuckets = () => {
   return s3.send(new ListBucketsCommand({}));
 };
 
-const getBucketRegion = async (name) => {
-  const results = await s3.send(new GetBucketLocationCommand({ Bucket: name }));
+const getRedirectRegion = (error, bucket) => {
+  const statusCode = error?.$metadata?.httpStatusCode ?? error?.statusCode;
+  const errorNames = [error?.name, error?.Code, error?.code];
+  const endpoint = error?.Endpoint;
 
-  let region = results.LocationConstraint;
-  region = region.substring(region.lastIndexOf(">") + 1);
+  if (statusCode !== 307 || !errorNames.includes("TemporaryRedirect") || typeof endpoint !== "string") {
+    return undefined;
+  }
+
+  let hostname = endpoint;
+  if (endpoint.includes("://")) {
+    try {
+      const parsedEndpoint = new URL(endpoint);
+      if (
+        parsedEndpoint.protocol !== "https:" ||
+        parsedEndpoint.port ||
+        parsedEndpoint.pathname !== "/" ||
+        parsedEndpoint.search ||
+        parsedEndpoint.hash ||
+        parsedEndpoint.username ||
+        parsedEndpoint.password
+      ) {
+        return undefined;
+      }
+      hostname = parsedEndpoint.hostname;
+    } catch {
+      return undefined;
+    }
+  }
+
+  const escapedBucket = bucket.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = hostname.match(new RegExp(`^${escapedBucket}\\.s3\\.([a-z0-9]+(?:-[a-z0-9]+)*-[0-9]+)\\.wasabisys\\.com$`, "i"));
+  if (match) {
+    return match[1].toLowerCase();
+  }
+
+  const usEastOneAlias = new RegExp(`^${escapedBucket}\\.s3\\.wasabisys\\.com$`, "i");
+  return usEastOneAlias.test(hostname) ? "us-east-1" : undefined;
+};
+
+const normalizeRegion = (locationConstraint) => {
+  const location = typeof locationConstraint === "string" ? locationConstraint.trim() : "";
+  const closingTagIndex = location.lastIndexOf(">");
+  const region = (closingTagIndex >= 0 ? location.substring(closingTagIndex + 1) : location).trim();
+
+  if (!region) {
+    return "us-east-1";
+  }
+
+  return region === "EU" ? "eu-west-1" : region;
+};
+
+const discoverBucketRegion = async (name) => {
+  try {
+    const results = await s3.send(new GetBucketLocationCommand({ Bucket: name }));
+    return normalizeRegion(results?.LocationConstraint);
+  } catch (error) {
+    const redirectedRegion = getRedirectRegion(error, name);
+    if (redirectedRegion) {
+      return redirectedRegion;
+    }
+    throw error;
+  }
+};
+
+const resolveBucketRegion = (name) => {
+  const cachedRegion = bucketRegions.get(name);
+  if (cachedRegion) {
+    return cachedRegion;
+  }
+
+  const regionPromise = discoverBucketRegion(name);
+  bucketRegions.set(name, regionPromise);
+  regionPromise.catch(() => {
+    if (bucketRegions.get(name) === regionPromise) {
+      bucketRegions.delete(name);
+    }
+  });
+  return regionPromise;
+};
+
+const getBucketClient = async (name) => {
+  const region = await resolveBucketRegion(name);
+  const cachedClient = regionalClients.get(region);
+  if (cachedClient) {
+    return cachedClient;
+  }
+
+  const client = new S3Client({
+    endpoint: `https://s3.${region}.wasabisys.com`,
+    region,
+    credentials: {
+      accessKeyId: config.wasabi.accessKeyId,
+      secretAccessKey: config.wasabi.secretAccessKey,
+    },
+  });
+  regionalClients.set(region, client);
+  return client;
+};
+
+const getBucketRegion = async (name) => {
+  const region = await resolveBucketRegion(name);
 
   let longDescription, shortDescription;
   switch (region) {
@@ -114,11 +214,13 @@ const getListObjects = async (params) => {
     bucketParams = { ...bucketParams, ContinuationToken };
   }
 
-  return s3.send(new ListObjectsV2Command(bucketParams));
+  const client = await getBucketClient(Bucket);
+  return client.send(new ListObjectsV2Command(bucketParams));
 };
 
-const getObjectAccessUrl = ({ Bucket, Key }) => {
-  return getSignedUrl(s3, new GetObjectCommand({ Bucket, Key }), {
+const getObjectAccessUrl = async ({ Bucket, Key }) => {
+  const client = await getBucketClient(Bucket);
+  return getSignedUrl(client, new GetObjectCommand({ Bucket, Key }), {
     expiresIn: 3600,
   });
 };

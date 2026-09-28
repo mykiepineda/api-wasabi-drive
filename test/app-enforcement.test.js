@@ -86,7 +86,7 @@ const restoreEnvironment = () => {
   clearRouterModules();
 };
 
-const requestStatus = (app, path, headers = {}) =>
+const requestResponse = (app, path, headers = {}) =>
   new Promise((resolve, reject) => {
     const server = app.listen(0, () => {
       const request = require("node:http").get(
@@ -97,10 +97,14 @@ const requestStatus = (app, path, headers = {}) =>
           headers,
         },
         (response) => {
-          response.resume();
+          const chunks = [];
+          response.on("data", (chunk) => chunks.push(chunk));
           response.on("end", () => {
             server.close();
-            resolve(response.statusCode);
+            resolve({
+              statusCode: response.statusCode,
+              body: Buffer.concat(chunks).toString(),
+            });
           });
         },
       );
@@ -109,7 +113,23 @@ const requestStatus = (app, path, headers = {}) =>
     server.on("error", reject);
   });
 
+const requestStatus = async (app, path, headers = {}) =>
+  (await requestResponse(app, path, headers)).statusCode;
+
 test.afterEach(restoreEnvironment);
+
+test("health route returns its fixed response without authentication", async () => {
+  setRequiredEntraEnvironment();
+  clearApplicationModules();
+  clearRouterModules();
+  installAccessTokenStub();
+  installRouterStubs();
+
+  const response = await requestResponse(require(appPath), "/health");
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), { status: "ok" });
+});
 
 for (const [name, environmentValue] of [
   ["absent", undefined],

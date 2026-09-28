@@ -1,6 +1,9 @@
 const apiGatewayHostPattern = /^[a-z0-9-]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com$/i;
 const localHosts = new Set(["localhost", "127.0.0.1"]);
-const allowedTargets = new Set(["local", "development", "test"]);
+const allowedTargetsByScope = {
+  regression: new Set(["local", "development", "test"]),
+  "deployment-smoke": new Set(["local", "development", "test", "prd"]),
+};
 
 function parseBaseUrl(baseUrl) {
   if (typeof baseUrl !== "string" || !baseUrl.trim()) {
@@ -29,19 +32,23 @@ function isLocalUrl(parsedUrl) {
   return localHosts.has(parsedUrl.hostname);
 }
 
-function isTestApiGatewayUrl(parsedUrl) {
-  const [stage] = parsedUrl.pathname.split("/").filter(Boolean);
+function isApiGatewayStageUrl(parsedUrl, stage) {
   return (
     parsedUrl.protocol === "https:" &&
     apiGatewayHostPattern.test(parsedUrl.hostname) &&
-    stage === "test"
+    parsedUrl.pathname === `/${stage}`
   );
 }
 
 function validateIntegrationTarget({ target, baseUrl, scope = "regression" }) {
+  const allowedTargets = allowedTargetsByScope[scope];
+  if (!allowedTargets) {
+    throw new Error(`Unknown integration scope: ${scope}`);
+  }
+
   if (!allowedTargets.has(target)) {
     throw new Error(
-      "Integration tests require INTEGRATION_TARGET=local, development, or test."
+      `Integration scope ${scope} does not allow INTEGRATION_TARGET=${target}.`
     );
   }
 
@@ -54,9 +61,9 @@ function validateIntegrationTarget({ target, baseUrl, scope = "regression" }) {
     );
   }
 
-  if (target === "test" && !isTestApiGatewayUrl(parsedUrl)) {
+  if ((target === "test" || target === "prd") && !isApiGatewayStageUrl(parsedUrl, target)) {
     throw new Error(
-      "INTEGRATION_TARGET=test requires an HTTPS API Gateway URL with /test as its stage path."
+      `INTEGRATION_TARGET=${target} requires an HTTPS API Gateway URL with /${target} as its stage path.`
     );
   }
 

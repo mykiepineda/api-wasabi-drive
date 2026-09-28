@@ -1,0 +1,105 @@
+name: Backend Production Promotion
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Full 40-character master commit SHA already validated in test"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: backend-prd-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy-prd:
+    name: Promote to production
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: prd
+
+    steps:
+      - name: Checkout master history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate and check out requested source SHA
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if ! [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "source_sha must be a full 40-character Git commit SHA" >&2
+            exit 1
+          fi
+
+          if ! git cat-file -e "${SOURCE_SHA}^{commit}"; then
+            echo "source_sha does not resolve to a Git commit" >&2
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" origin/master; then
+            echo "source_sha is not an ancestor of origin/master" >&2
+            exit 1
+          fi
+
+          git checkout --detach "$SOURCE_SHA"
+
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          EXPECTED_SHA="$(git rev-parse "${SOURCE_SHA}^{commit}")"
+
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "Checked-out SHA does not match requested source_sha" >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Record deployment context
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          echo "Requested source SHA: $SOURCE_SHA"
+          echo "Verified checked-out SHA: $(git rev-parse HEAD)"
+          echo "Stage: prd"
+          echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-2
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: WasabiDrivePrd-${{ github.run_id }}
+          mask-aws-account-id: true
+
+      - name: Deploy production
+        env:
+          SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+          WASABI_SERVICE_URL: ${{ vars.WASABI_SERVICE_URL }}
+          WASABI_REGION: ${{ vars.WASABI_REGION }}
+          WASABI_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          WASABI_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+          ENTRA_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ENTRA_API_CLIENT_ID: ${{ vars.ENTRA_API_CLIENT_ID }}
+          ENTRA_REQUIRED_SCOPE: ${{ vars.ENTRA_REQUIRED_SCOPE }}
+          ENTRA_TRUSTED_USER_OBJECT_IDS: ${{ vars.ENTRA_TRUSTED_USER_OBJECT_IDS }}
+        run: npm run deploy:prd

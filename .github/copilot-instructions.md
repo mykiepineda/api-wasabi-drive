@@ -1,4 +1,4 @@
-# Wasabi Drive API — GitHub Copilot Instructions
+# Wasabi Drive Backend — GitHub Copilot Instructions
 
 ## Project role
 
@@ -6,244 +6,40 @@ Wasabi Drive is an existing production application and an incremental modernizat
 
 The developer is the technical owner and architectural decision-maker.
 
-Copilot is an implementation assistant. Make only the explicitly requested change, preserve working behavior, and do not independently redesign the architecture, authentication model, deployment model, AWS configuration, or application structure.
+Copilot is an implementation assistant. Make only the explicitly requested change, preserve working behavior, and do not independently redesign the backend, authentication model, AWS architecture, deployment model, Serverless configuration, or storage integration.
 
 Prefer focused, reviewable changes over broad cleanup.
 
 ## Current phase
 
-The broader modernization work is currently in **Phase 6 — CI/CD and Deployment Safety**.
+Current modernization phase:
+
+**Phase 6 — CI/CD and Deployment Safety**
 
 CI/CD = Continuous Integration / Continuous Delivery.
 
-Completed backend deployment-safety work includes:
+Completed work:
 
-- backend pull-request CI using Node.js 24, `npm ci`, and `npm test`;
-- normalized backend deployment commands;
-- automated backend `test` deployment from protected `master`;
-- GitHub OIDC-based AWS authentication using short-lived AWS STS credentials;
-- Serverless Framework version constrained to the reviewed 4.42 minor line.
+- 6A — backend pull-request CI;
+- 6B — frontend pull-request CI;
+- 6C — deployment command normalization;
+- 6D — automated backend `test` deployment using GitHub Actions, GitHub OIDC, AWS STS, and Serverless Framework;
+- 6E — backend test-stage verification;
+- 6F — stable frontend test Firebase Hosting environment;
+- 6G — automated frontend `test` deployment using GitHub OIDC and Google Workload Identity Federation;
+- Serverless Framework version constrained to the approved 4.42.x line.
 
-The planned Phase 6 work is temporarily paused for an urgent production Wasabi storage hotfix.
+The active task is:
 
-Do not start or continue unrelated Phase 6 tasks in this change.
+**Task 6H-A — Controlled backend production promotion**
 
-## Active task
+The external Task 6H-A prerequisites are complete. Work on `ci/backend-prd-promotion` only; do not run either deployment command from this feature branch.
 
-Fix production browsing of Wasabi buckets that reside in a different Wasabi storage region from the configured bootstrap/default endpoint.
-
-Recommended branch:
-
-`hotfix/wasabi-multi-region-buckets`
-
-Observed production failure when accessing bucket `klaris-icloud`:
-
-- HTTP status: `307`;
-- Wasabi error name/code: `TemporaryRedirect`;
-- returned endpoint: `klaris-icloud.s3.ap-southeast-2.wasabisys.com`;
-- message asks the client to resend the request to the temporary endpoint.
-
-The current storage implementation constructs one module-level `S3Client` from:
-
-- `WASABI_SERVICE_URL`;
-- `WASABI_REGION`.
-
-That one client is currently used for:
-
-- `ListBuckets`;
-- `GetBucketLocation`;
-- `ListObjectsV2`;
-- presigned `GetObject` access URLs.
-
-This single-region assumption is the production defect for bucket-specific operations.
-
-## Objective
-
-Support Wasabi buckets across multiple Wasabi regions while preserving the existing public backend API and separation of concerns.
-
-The configured `WASABI_SERVICE_URL` / `WASABI_REGION` remain the bootstrap/default Wasabi client configuration. Do not require one environment variable per bucket or per region.
-
-Bucket-specific operations must use an S3 client configured for the target bucket's actual Wasabi region.
-
-## Required implementation direction
-
-Keep the implementation inside the existing storage/infrastructure boundary unless a concrete blocker proves another layer must change.
-
-Primary implementation file:
-
-`src/storage/wasabi.js`
-
-Primary test file:
-
-`test/wasabi.storage.test.js`
-
-### 1. Preserve the configured/default client
-
-Keep a configured/default Wasabi `S3Client` built from the existing centralized configuration.
-
-Use it for account-level behavior such as `ListBuckets` and as the initial/bootstrap client for bucket-region discovery.
-
-Do not change existing environment variable names.
-
-### 2. Add bucket-region resolution
-
-Introduce small internal helpers as needed to resolve the actual region for a bucket.
-
-Continue using the existing `GetBucketLocationCommand` behavior rather than introducing a new API or dependency solely for this hotfix.
-
-When `GetBucketLocationCommand` succeeds, normalize the returned `LocationConstraint` into a region string.
-
-Preserve existing region response behavior returned by `getBucketRegion(name)`, including `region`, `longDescription`, and `shortDescription` where currently defined.
-
-Handle an empty/null location constraint safely if encountered instead of calling string methods on `null` or `undefined`.
-
-### 3. Handle Wasabi 307 TemporaryRedirect explicitly
-
-If bucket-region discovery fails with a Wasabi `TemporaryRedirect` response matching the observed production shape:
-
-- status code `307`;
-- error name/code `TemporaryRedirect`;
-- a Wasabi bucket endpoint in `error.Endpoint`;
-
-extract the target Wasabi region from the endpoint.
-
-Example:
-
-`klaris-icloud.s3.ap-southeast-2.wasabisys.com`
-
-must resolve to:
-
-`ap-southeast-2`
-
-Do not blindly trust or use an arbitrary endpoint URL supplied by an error response.
-
-Validate that the endpoint is a Wasabi S3 endpoint before using it as a region-discovery signal, then construct the regional service endpoint from the validated region.
-
-The normal regional endpoint form is:
-
-`https://s3.<region>.wasabisys.com`
-
-Also handle Wasabi's US East 1 canonical/alias behavior safely if relevant to the helper.
-
-If the error is not the recognized Wasabi regional redirect shape, rethrow the original error. Do not hide unrelated storage failures and do not implement an unbounded retry loop.
-
-Do not use generic HTTP redirect following.
-
-Do not rely on the AWS SDK v3 `followRegionRedirects` option for this hotfix: AWS documents it for S3 `301 PermanentRedirect`; the observed Wasabi response is `307 TemporaryRedirect`.
-
-### 4. Create/reuse regional clients
-
-Create an `S3Client` for the resolved bucket region using:
-
-- the canonical Wasabi regional service URL;
-- the resolved region for Signature Version 4 signing;
-- the existing configured Wasabi credentials.
-
-Cache resolved bucket regions and/or regional clients in module memory so repeated requests on a warm Lambda instance do not rediscover the same bucket region unnecessarily.
-
-Keep the cache simple and process-local. Do not add Redis, DynamoDB, a database, Parameter Store, Secrets Manager, or another service.
-
-If a cached asynchronous resolution fails, do not permanently poison the cache with a rejected promise.
-
-### 5. Use the regional client for every bucket-specific operation
-
-Update bucket-specific operations so they use the target bucket's resolved regional client:
-
-- `getBucketRegion(name)`;
-- `getListObjects(params)`;
-- `getObjectAccessUrl({ Bucket, Key })`.
-
-This is especially important for `getObjectAccessUrl`: generating a presigned URL does not make a network request that can receive a redirect, so the URL must be signed with the correct regional client from the start.
-
-Do not change the existing one-hour access URL behavior in this task.
-
-### 6. Preserve existing API and layering
-
-Preserve:
-
-HTTP / Express route
--> application/service layer
--> infrastructure/storage implementation
--> AWS SDK for JavaScript v3
--> Wasabi.
-
-Do not move Wasabi endpoint logic into Express routes or the React frontend.
-
-Do not change response shapes for successful existing API operations.
-
-No frontend change is expected for this hotfix.
-
-## Tests required
-
-Extend `test/wasabi.storage.test.js` with focused regression coverage for the production failure.
-
-At minimum, cover:
-
-1. existing same-region behavior still works;
-2. `GetBucketLocation` returning a Wasabi `307 TemporaryRedirect` for a bucket such as `klaris-icloud` resolves `ap-southeast-2` correctly;
-3. after region resolution, `ListObjectsV2` uses an `S3Client` configured with region `ap-southeast-2` and endpoint `https://s3.ap-southeast-2.wasabisys.com`;
-4. presigned object access for that bucket uses the same correct regional client;
-5. repeated operations can reuse cached region/client information rather than rediscovering the bucket each time;
-6. malformed or unrelated errors are propagated rather than treated as valid region redirects.
-
-Keep tests deterministic and isolated. Enhance the existing AWS SDK stubs only as much as needed to observe which client/options were used.
-
-Do not weaken or delete existing tests.
-
-Do not make tests depend on live Wasabi access.
-
-## Expected source scope
-
-Expected changed files are normally limited to:
-
-- `src/storage/wasabi.js`;
-- `test/wasabi.storage.test.js`;
-- `.github/copilot-instructions.md` if this updated instruction file is being committed as part of the hotfix.
-
-Do not change these unless a concrete implementation blocker requires it:
-
-- `src/service/buckets.js`;
-- `src/api/buckets.js`;
-- `src/app.js`;
-- `src/config/index.js`;
-- `.env.example`;
-- `serverless.yml`;
-- `package.json`;
-- `package-lock.json`;
-- GitHub Actions workflows;
-- Bruno scripts or collections;
-- authentication or authorization code.
-
-If another source file truly must change, explain why before expanding scope.
-
-## Explicit non-goals
-
-Do not include unrelated cleanup or modernization.
-
-In particular, do not:
-
-- migrate Express;
-- migrate CommonJS to ESM;
-- introduce TypeScript;
-- change Microsoft Entra authentication;
-- change trusted-user authorization;
-- add API Gateway API keys as authentication;
-- change API Gateway type;
-- add Lambda authorizers;
-- change Serverless Framework versions;
-- change AWS deployment roles;
-- change GitHub Actions workflows;
-- change frontend code;
-- change Firebase configuration;
-- add a database or cache service;
-- add dependencies unless a concrete blocker is first reported;
-- implement uploads, deletes, or other new Wasabi features;
-- perform broad error-response redesign in this hotfix;
-- deploy `test` or `prd` from the feature branch.
-
-The existing raw storage-error serialization can be reviewed separately after the production correctness fix; do not expand this urgent hotfix unless the developer explicitly requests that hardening.
+Do not start Task 6H-B frontend production promotion.
 
 ## Current backend architecture
+
+Treat the latest `master` source as authoritative.
 
 Preserve:
 
@@ -254,62 +50,518 @@ Preserve:
 - API Gateway REST API;
 - Serverless Framework v4;
 - CloudFormation;
-- AWS SDK for JavaScript v3;
-- Wasabi S3-compatible storage;
-- Microsoft Entra authentication;
-- backend stages `test` and `prd`.
+- AWS SDK for JavaScript v3 where currently used;
+- Wasabi S3-compatible object storage;
+- stages `test` and `prd`.
+
+Preserve the established backend separation of concerns:
+
+HTTP / Express route
+-> application/service layer
+-> infrastructure/storage implementation
+-> Wasabi / AWS SDK.
 
 Local HTTP startup remains separate from Lambda application construction.
 
 Configuration remains centralized.
 
-## Security invariants
+Do not introduce new frameworks, databases, queues, services, or architectural layers.
 
-Do not weaken:
+## Current identity and security model
 
-- Microsoft Entra authentication is mandatory;
-- backend validates OAuth 2.0 access tokens;
-- trusted-user authorization remains server-side;
-- backend is the security authority;
-- Wasabi credentials remain server-side;
-- Wasabi objects remain private;
-- temporary backend-authorized access URLs remain the object-access mechanism;
-- API Gateway API keys are not authentication;
-- no MongoDB/custom-password fallback exists.
+Preserve:
 
-Do not add secrets, credentials, tokens, passwords, real access URLs, or production data to source or tests.
+React SPA
+-> Microsoft Authentication Library (MSAL)
+-> Microsoft Entra
+-> OAuth 2.0 / OpenID Connect
+-> access token
+-> API Gateway
+-> Express authentication
+-> application authorization
+-> Wasabi.
 
-Do not log Wasabi credentials.
+OIDC = OpenID Connect.
 
-## CI/CD and deployment invariants
+AWS STS = AWS Security Token Service. GitHub OIDC exchanges the GitHub workload identity for short-lived AWS credentials through STS.
 
-`master` is protected.
+The backend remains the security authority.
 
-Do not commit directly to `master`.
+Do not restore:
 
-Use the focused hotfix branch:
+- MongoDB authentication;
+- bcrypt password authentication;
+- UUID authentication;
+- API Gateway API-key authentication;
+- frontend-only authorization.
 
-`hotfix/wasabi-multi-region-buckets`
+Do not place long-lived AWS access keys in GitHub.
 
-Preserve existing backend PR validation:
+Do not commit secrets.
 
-- Node.js 24;
-- `npm ci`;
-- `npm test`.
+Wasabi credentials remain externalized.
 
-Preserve automated backend `test` deployment from protected `master`.
+## Existing deployment state
 
-GitHub Actions uses GitHub OIDC -> AWS STS temporary credentials -> dedicated backend `test` deployment role -> Serverless Framework.
+The backend already has:
 
-Do not introduce permanent AWS access keys.
+- pull-request CI for PRs to `master`;
+- automatic deployment of `master` to the backend `test` stage;
+- GitHub OIDC -> dedicated AWS `test` deploy role;
+- a GitHub Environment named `test`;
+- `npm run deploy:test`;
+- `npm run deploy:prd`;
+- backend regression command `npm test`;
+- safe integration regression command `npm run test:integration`.
 
-Do not edit deployment workflows in this task.
+The working backend `test` deployment workflow and its security choices are approved.
 
-Do not deploy production from Copilot.
+Do not refactor or broaden the existing `test` workflow during Task 6H-A.
 
-## Validation
+## Task 6H-A objective
 
-Before reporting implementation complete, run in the repository using Node.js 24:
+Add an explicit, controlled production promotion workflow.
+
+Target release flow:
+
+feature branch
+-> pull request
+-> backend PR CI
+-> protected `master`
+-> automatic backend `test` deployment
+-> technical-owner validation in `test`
+-> manually start production workflow
+-> provide exact tested `master` commit SHA
+-> GitHub Environment `prd`
+-> validate requested SHA is a commit from `master`
+-> checkout that exact SHA
+-> `npm ci`
+-> `npm test`
+-> GitHub OIDC
+-> dedicated AWS production deploy role
+-> `npm run deploy:prd`
+-> production verification.
+
+Production must **not** deploy automatically on every push to `master`.
+
+The source promoted to production must be an explicit full Git commit SHA already validated in `test`.
+
+## External prerequisites
+
+The technical owner has completed the external Task 6H-A setup.
+
+Assume the backend repository GitHub Environment:
+
+`prd`
+
+already exists and contains the required production configuration.
+
+Assume it is restricted to `master`.
+
+Assume a dedicated AWS production deploy role has been created and its trust policy is restricted to the backend repository GitHub Environment `prd`.
+
+Do not create or modify:
+
+- AWS IAM roles;
+- AWS IAM policies;
+- GitHub Environments;
+- GitHub Environment variables;
+- GitHub Environment secrets;
+- Serverless Dashboard access keys.
+
+Do not use infrastructure code to bootstrap these resources during this task.
+
+## Expected GitHub `prd` Environment configuration
+
+The workflow may reference these GitHub Environment **variables**:
+
+- `AWS_ACCOUNT_ID`;
+- `AWS_DEPLOY_ROLE_ARN`;
+- `WASABI_SERVICE_URL`;
+- `WASABI_REGION`;
+- `ENTRA_TENANT_ID`;
+- `ENTRA_API_CLIENT_ID`;
+- `ENTRA_REQUIRED_SCOPE`;
+- `ENTRA_TRUSTED_USER_OBJECT_IDS`.
+
+The workflow may reference these GitHub Environment **secrets**:
+
+- `SERVERLESS_ACCESS_KEY`;
+- `WASABI_ACCESS_KEY_ID`;
+- `WASABI_SECRET_ACCESS_KEY`.
+
+Do not hardcode actual values.
+
+Do not introduce permanent AWS credentials such as:
+
+- `AWS_ACCESS_KEY_ID`;
+- `AWS_SECRET_ACCESS_KEY`.
+
+AWS deployment credentials must come from GitHub OIDC and STS.
+
+## Required workflow
+
+Create:
+
+`.github/workflows/backend-prd-deploy.yml`
+
+Suggested workflow name:
+
+`Backend Production Promotion`
+
+The workflow must be **manual only**.
+
+Use:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Full 40-character master commit SHA already validated in test"
+        required: true
+        type: string
+```
+
+Do not add:
+
+- `push`;
+- `pull_request`;
+- `schedule`.
+
+Do not add an automatic production trigger.
+
+## GitHub Environment
+
+The deployment job must use:
+
+```yaml
+environment:
+  name: prd
+```
+
+If the external GitHub Environment has required reviewers, GitHub will pause at that environment gate.
+
+Do not weaken or bypass Environment protection.
+
+Do not change the `test` Environment.
+
+## GitHub token permissions
+
+Use only:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+```
+
+`id-token: write` allows GitHub Actions to request the OIDC token required for AWS role assumption.
+
+It does not itself grant AWS permissions.
+
+Do not add broader GitHub token permissions without a demonstrated requirement.
+
+## Production concurrency
+
+Use:
+
+```yaml
+concurrency:
+  group: backend-prd-deployment
+  cancel-in-progress: false
+```
+
+A production deployment already in progress must not be cancelled by another request.
+
+## Workflow run context
+
+The production workflow must run from `master`.
+
+Do not rely only on operator convention.
+
+Use a job-level guard or an explicit validation step to reject/skip execution when:
+
+```text
+github.ref != refs/heads/master
+```
+
+The GitHub `prd` Environment branch restriction remains a second independent control.
+
+## Exact source SHA validation
+
+The workflow input `source_sha` is untrusted text and must not be interpolated unsafely into shell commands.
+
+Pass it through an environment variable, for example:
+
+```yaml
+env:
+  SOURCE_SHA: ${{ inputs.source_sha }}
+```
+
+Always quote shell variable use.
+
+Before tests or deployment, validate all of the following:
+
+1. `SOURCE_SHA` is exactly a 40-character hexadecimal SHA;
+2. it resolves to a Git commit;
+3. it is an ancestor of the current remote `master`;
+4. after checkout, `HEAD` is exactly that commit.
+
+Use a full repository history for this validation:
+
+```yaml
+with:
+  fetch-depth: 0
+  persist-credentials: false
+```
+
+A suitable validation approach is conceptually:
+
+```bash
+if ! [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "source_sha must be a full 40-character Git commit SHA" >&2
+  exit 1
+fi
+
+git cat-file -e "${SOURCE_SHA}^{commit}"
+
+if ! git merge-base --is-ancestor "$SOURCE_SHA" origin/master; then
+  echo "source_sha is not an ancestor of origin/master" >&2
+  exit 1
+fi
+
+git checkout --detach "$SOURCE_SHA"
+
+ACTUAL_SHA="$(git rev-parse HEAD)"
+EXPECTED_SHA="$(git rev-parse "${SOURCE_SHA}^{commit}")"
+
+if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+  echo "Checked-out SHA does not match requested source_sha" >&2
+  exit 1
+fi
+```
+
+Do not accept:
+
+- abbreviated SHAs;
+- branch names;
+- tags;
+- arbitrary refs;
+- a SHA that is not reachable from `master`.
+
+Do not silently replace the requested SHA with current `master`.
+
+## GitHub Actions dependencies
+
+Reuse the already approved action pins from the backend test workflow.
+
+Checkout:
+
+`actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1`
+
+Use:
+
+```yaml
+fetch-depth: 0
+persist-credentials: false
+```
+
+Node:
+
+`actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0`
+
+Use:
+
+```yaml
+node-version: "24"
+package-manager-cache: false
+```
+
+AWS credentials:
+
+`aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0`
+
+Do not replace reviewed full commit SHAs with floating tags.
+
+Do not add unnecessary third-party actions.
+
+## Required execution order
+
+The intended order is:
+
+```text
+checkout master with full history
+-> validate requested SHA belongs to master
+-> detach checkout at exact requested SHA
+-> verify HEAD
+-> setup Node.js 24
+-> npm ci
+-> npm test
+-> record deployment context
+-> obtain short-lived AWS credentials through GitHub OIDC
+-> npm run deploy:prd
+```
+
+AWS authentication must happen only after source validation and tests pass.
+
+Do not call AWS deployment authentication before tests.
+
+## AWS OIDC authentication
+
+Use the same proven configuration pattern as the backend `test` deployment:
+
+```yaml
+- name: Configure AWS credentials
+  uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+  with:
+    role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+    aws-region: ap-southeast-2
+    allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+    role-session-name: WasabiDrivePrd-${{ github.run_id }}
+    mask-aws-account-id: true
+```
+
+Do not use static AWS keys.
+
+If role assumption fails, report the exact error.
+
+Do not weaken the trust policy or broaden AWS permissions from source code.
+
+## Production deployment step
+
+Use the existing normalized command:
+
+```bash
+npm run deploy:prd
+```
+
+Scope production configuration/secrets to the deployment step rather than exposing them unnecessarily to dependency installation or tests.
+
+The deployment step should receive:
+
+```yaml
+env:
+  SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+  WASABI_SERVICE_URL: ${{ vars.WASABI_SERVICE_URL }}
+  WASABI_REGION: ${{ vars.WASABI_REGION }}
+  WASABI_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+  WASABI_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+  ENTRA_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+  ENTRA_API_CLIENT_ID: ${{ vars.ENTRA_API_CLIENT_ID }}
+  ENTRA_REQUIRED_SCOPE: ${{ vars.ENTRA_REQUIRED_SCOPE }}
+  ENTRA_TRUSTED_USER_OBJECT_IDS: ${{ vars.ENTRA_TRUSTED_USER_OBJECT_IDS }}
+```
+
+Do not print these values.
+
+Do not run `npm run test:integration` against production automatically.
+
+Do not perform destructive production verification.
+
+## Deployment traceability
+
+Before AWS authentication, log only non-secret release context:
+
+- requested source SHA;
+- verified checked-out SHA;
+- stage = `prd`;
+- GitHub workflow run URL.
+
+Do not log:
+
+- Wasabi credentials;
+- Serverless access key;
+- AWS session credentials;
+- Entra bearer tokens;
+- any user access token.
+
+The exact production source SHA must be visible in the job log.
+
+## Rollback model
+
+Do not build a separate rollback system during Task 6H-A.
+
+The rollback procedure is:
+
+1. identify a known-good previous `master` commit SHA;
+2. manually run `Backend Production Promotion`;
+3. supply that exact known-good SHA;
+4. workflow performs the same validation/tests;
+5. redeploy the known-good source to `prd`.
+
+Document this in the README.
+
+Do not use `git revert` automatically.
+
+Do not mutate `master` from the deployment workflow.
+
+## Existing automatic test deployment
+
+Do not modify:
+
+`.github/workflows/backend-test-deploy.yml`
+
+for Task 6H-A unless a concrete blocking defect is discovered and reported first.
+
+Merging the Task 6H-A PR to `master` will naturally trigger the existing backend `test` deployment.
+
+That is desirable.
+
+After merge:
+
+1. allow the existing test deployment to complete;
+2. validate the merged SHA in `test`;
+3. manually run production promotion with the same full SHA.
+
+Do not automatically chain test deployment into production.
+
+## README documentation
+
+Update backend deployment documentation to describe the release flow.
+
+Document:
+
+- PR CI;
+- automatic `test` deployment on merge to `master`;
+- test validation before production;
+- production deployment is manual;
+- exact full `master` SHA must be supplied;
+- GitHub Environment `prd` is the production protection boundary;
+- GitHub OIDC / AWS STS provides short-lived AWS credentials;
+- no permanent AWS deployment access keys are stored in GitHub;
+- `npm run deploy:prd` remains the underlying deployment command;
+- rollback is performed by rerunning the production workflow with a known-good `master` SHA.
+
+Do not document secret values.
+
+## Expected source changes
+
+Expected Task 6H-A changes are limited to:
+
+- `.github/workflows/backend-prd-deploy.yml`;
+- `.github/copilot-instructions.md`;
+- `README.md`.
+
+No changes are expected to:
+
+- application source under `src/`;
+- `serverless.yml`;
+- `package.json`;
+- `package-lock.json`;
+- tests;
+- integration tests;
+- existing backend test deployment workflow.
+
+If implementation appears to require changes outside the expected files, stop and report why rather than expanding scope automatically.
+
+## Local validation before commit
+
+Use branch:
+
+`ci/backend-prd-promotion`
+
+Run:
 
 ```bash
 npm ci
@@ -318,30 +570,143 @@ git diff --check
 git status --short
 ```
 
-All tests must pass.
+Do not deploy from the feature branch.
 
-Do not assume a fixed historical test count because this hotfix adds regression tests.
-
-Review the diff and confirm there is no unrelated formatting, dependency update, audit fix, generated file, secret, or deployment change.
-
-Do not run from the feature branch unless the developer explicitly requests it:
+Do not run:
 
 ```bash
 npm run deploy:test
 npm run deploy:prd
 ```
 
-Do not deploy anything as part of implementation.
+Do not assume AWS credentials locally.
 
-## Expected implementation report
+Perform static workflow review confirming:
 
-When finished, report:
+1. workflow trigger is only `workflow_dispatch`;
+2. `source_sha` is required;
+3. job uses GitHub Environment `prd`;
+4. workflow execution is restricted to `master`;
+5. permissions are only `contents: read` and `id-token: write`;
+6. production concurrency is serialized and does not cancel in-progress deploys;
+7. checkout uses full history and does not persist credentials;
+8. input SHA is handled through a quoted environment variable;
+9. SHA must be exactly 40 hex characters;
+10. SHA must resolve to a commit;
+11. SHA must be an ancestor of `origin/master`;
+12. exact SHA is checked out detached;
+13. checked-out HEAD is verified;
+14. Node.js 24 is used;
+15. `npm ci` runs;
+16. `npm test` runs before AWS authentication;
+17. AWS credentials use GitHub OIDC and the dedicated environment role;
+18. `allowed-account-ids` is used;
+19. no permanent AWS access key is referenced;
+20. production Wasabi/Serverless secrets are exposed only to the deploy step;
+21. deploy command is `npm run deploy:prd`;
+22. no production integration test is run automatically;
+23. test deployment workflow is unchanged;
+24. no application code changed;
+25. no deployment was executed from the feature branch;
+26. Task 6H-B was not started.
 
-1. files changed;
-2. concise description of the region-resolution and client-caching behavior;
-3. regression tests added;
-4. exact validation commands run and results;
-5. any assumptions or edge cases that remain;
-6. confirmation that no deployment was performed.
+## First production validation
 
-Do not proceed into another task after completing this hotfix.
+Do not run production deployment from the feature branch.
+
+After:
+
+- PR CI passes;
+- workflow review passes;
+- PR is merged to protected `master`;
+- automatic backend `test` deployment for the merged SHA succeeds;
+- technical owner validates that exact SHA in `test`;
+
+manually start:
+
+`Backend Production Promotion`
+
+from `master`.
+
+Supply the exact 40-character tested commit SHA.
+
+If the GitHub `prd` Environment requires approval, approve the deployment there.
+
+After successful production deployment, perform only proportionate production smoke validation, such as:
+
+- confirm the production API is reachable;
+- confirm an unauthenticated protected request still receives the expected authentication failure;
+- confirm an authenticated application flow still succeeds;
+- confirm normal Wasabi navigation through the production application;
+- confirm no `test` resource was targeted.
+
+Do not weaken authentication to simplify validation.
+
+## Non-goals
+
+Do not implement during Task 6H-A:
+
+- frontend production promotion;
+- Task 6H-B;
+- automatic production deployment on push;
+- cross-repository release orchestration;
+- release branches;
+- release tags as a required deployment mechanism;
+- artifact registries;
+- production integration tests that mutate real data;
+- AWS IAM changes;
+- API Gateway migration;
+- Lambda architecture changes;
+- Serverless Framework migration;
+- dependency upgrades;
+- npm audit remediation;
+- MongoDB work;
+- authentication redesign;
+- authorization redesign;
+- CORS changes;
+- observability platform changes;
+- unrelated cleanup.
+
+## Completion report
+
+When implementation is complete, stop and report:
+
+- branch used;
+- exact files changed;
+- workflow filename and name;
+- trigger;
+- workflow input(s);
+- GitHub Environment;
+- GitHub permissions;
+- production concurrency configuration;
+- master-only execution guard;
+- checkout action version/full SHA;
+- checkout history/credential settings;
+- exact SHA validation behavior;
+- Node action version/full SHA;
+- Node version;
+- commands run before AWS authentication;
+- AWS auth action version/full SHA;
+- production role variable referenced;
+- account restriction variable referenced;
+- AWS region;
+- role session name;
+- production deployment command;
+- deployment-step variables/secrets referenced;
+- traceability logging;
+- rollback documentation;
+- README changes;
+- `npm ci` result;
+- `npm test` result and test count;
+- `git diff --check` result;
+- `git status --short` result;
+- confirmation no permanent AWS key was introduced;
+- confirmation no production deployment occurred from the feature branch;
+- confirmation existing `test` workflow was unchanged;
+- confirmation application source was unchanged;
+- confirmation Task 6H-B was not started;
+- any unexpected issue or external prerequisite.
+
+Do not commit unless explicitly instructed.
+
+Do not continue beyond Task 6H-A.

@@ -12,6 +12,9 @@ app.use(cors());
 
 /* API Endpoints */
 app.options("*", cors());
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
 app.use(
   "/buckets",
   createRequireEntraAccessToken(),

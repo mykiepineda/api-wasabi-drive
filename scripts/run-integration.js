@@ -18,6 +18,7 @@ const scope = process.argv[2] ?? "regression";
 
 const scopeOptions = {
   regression: ["--tags", "regression"],
+  "deployment-smoke": ["--tags", "deployment-smoke"],
 };
 
 if (!scopeOptions[scope]) {
@@ -26,13 +27,6 @@ if (!scopeOptions[scope]) {
 }
 
 const target = process.env.INTEGRATION_TARGET;
-if (!target || !["local", "development", "test"].includes(target)) {
-  console.error(
-    "Integration tests require INTEGRATION_TARGET=local, development, or test."
-  );
-  process.exit(1);
-}
-
 try {
   validateIntegrationTarget({
     target,
@@ -44,7 +38,11 @@ try {
   process.exit(1);
 }
 
-if (target === "test" && !process.env.INTEGRATION_ACCESS_TOKEN?.trim()) {
+if (
+  scope === "regression" &&
+  target === "test" &&
+  !process.env.INTEGRATION_ACCESS_TOKEN?.trim()
+) {
   console.error(
     "Integration tests targeting test require a non-blank INTEGRATION_ACCESS_TOKEN."
   );

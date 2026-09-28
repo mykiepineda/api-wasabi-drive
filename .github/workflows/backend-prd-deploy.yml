@@ -103,3 +103,9 @@ jobs:
           ENTRA_REQUIRED_SCOPE: ${{ vars.ENTRA_REQUIRED_SCOPE }}
           ENTRA_TRUSTED_USER_OBJECT_IDS: ${{ vars.ENTRA_TRUSTED_USER_OBJECT_IDS }}
         run: npm run deploy:prd
+
+      - name: Verify deployed API
+        env:
+          INTEGRATION_TARGET: prd
+          BASE_URL: ${{ vars.INTEGRATION_BASE_URL }}
+        run: npm run test:integration -- deployment-smoke

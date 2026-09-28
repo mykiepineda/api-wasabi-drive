@@ -61,7 +61,7 @@ Protected bucket routes are mounted at `/buckets` behind:
 2. trusted-user authorization;
 3. `src/api/buckets.js`.
 
-The backend currently has no health route.
+The backend exposes a shallow unauthenticated `GET /health` route returning `{ "status": "ok" }`; it does not probe downstream dependencies.
 
 The current Bruno integration runner is:
 
@@ -92,6 +92,8 @@ The current full `regression` integration scope is intentionally limited to:
 - `local`;
 - `development`;
 - `test`.
+
+The `deployment-smoke` scope checks only `/health` and unauthenticated `/buckets/`, and may target `local`, `development`, `test`, or `prd` only when the target and URL stage match.
 
 For `INTEGRATION_TARGET=test`, the full regression scope requires a short-lived delegated Entra access token.
 

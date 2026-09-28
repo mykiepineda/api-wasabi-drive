@@ -33,6 +33,8 @@ The active task is:
 
 **Task 6H-A — Controlled backend production promotion**
 
+The external Task 6H-A prerequisites are complete. Work on `ci/backend-prd-promotion` only; do not run either deployment command from this feature branch.
+
 Do not start Task 6H-B frontend production promotion.
 
 ## Current backend architecture

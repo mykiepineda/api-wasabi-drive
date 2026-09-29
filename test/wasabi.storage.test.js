@@ -1,6 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("node:module");
+const http = require("node:http");
+const express = require("express");
+const { StorageProviderError } = require("../src/errors");
 
 const wasabiPath = require.resolve("../src/storage/wasabi");
 const originalLoad = Module._load;
@@ -8,6 +11,8 @@ const responses = [];
 const locationResponses = [];
 const requests = [];
 const signedUrlRequests = [];
+const commandFailures = new Map();
+let signingFailure;
 
 class ListBucketsCommand {
   constructor(input) {
@@ -33,6 +38,8 @@ class ListObjectsV2Command {
   }
 }
 
+class S3ServiceException extends Error {}
+
 class S3Client {
   constructor(options) {
     this.options = options;
@@ -40,6 +47,11 @@ class S3Client {
 
   send(command) {
     requests.push({ client: this, command });
+    if (commandFailures.has(command.constructor)) {
+      const failure = commandFailures.get(command.constructor);
+      commandFailures.delete(command.constructor);
+      return Promise.reject(failure);
+    }
     if (command instanceof ListBucketsCommand) {
       return Promise.resolve({ Buckets: [] });
     }
@@ -53,6 +65,11 @@ class S3Client {
 
 const getSignedUrl = (client, command, options) => {
   signedUrlRequests.push({ client, command, options });
+  if (signingFailure) {
+    const failure = signingFailure;
+    signingFailure = undefined;
+    return Promise.reject(failure);
+  }
   return Promise.resolve("https://example.test/fake-signed-object-url");
 };
 
@@ -63,6 +80,7 @@ Module._load = function (request, parent, isMain) {
       GetBucketLocationCommand,
       ListBucketsCommand,
       ListObjectsV2Command,
+      S3ServiceException,
       S3Client,
     };
   }
@@ -84,6 +102,8 @@ Module._load = function (request, parent, isMain) {
 };
 const wasabi = require(wasabiPath);
 Module._load = originalLoad;
+const storageRouter = require("../src/api/buckets");
+const errorHandler = require("../src/api/errorHandler");
 
 test.after(() => {
   delete require.cache[wasabiPath];
@@ -94,7 +114,38 @@ test.beforeEach(() => {
   locationResponses.length = 0;
   requests.length = 0;
   signedUrlRequests.length = 0;
+  commandFailures.clear();
+  signingFailure = undefined;
 });
+
+const requestThroughStorageRoute = (path) => {
+  const app = express();
+  app.use("/buckets", storageRouter);
+  app.use(errorHandler);
+
+  return new Promise((resolve, reject) => {
+    const server = app.listen(0, () => {
+      http.get({
+        hostname: "127.0.0.1",
+        port: server.address().port,
+        path,
+      }, (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () => {
+          server.close((error) => {
+            if (error) return reject(error);
+            resolve({
+              status: response.statusCode,
+              body: Buffer.concat(chunks).toString(),
+            });
+          });
+        });
+      }).on("error", reject);
+    });
+    server.on("error", reject);
+  });
+};
 
 test("getListObjects maps request parameters for S3", async () => {
   responses.push({ KeyCount: 0 });
@@ -102,7 +153,7 @@ test("getListObjects maps request parameters for S3", async () => {
   await wasabi.getListObjects({
     Bucket: "same-region-documents",
     Prefix: "reports/",
-    MaxKeys: "25",
+    MaxKeys: 25,
     ContinuationToken: "token",
   });
 
@@ -266,7 +317,10 @@ test("failed bucket-region lookup is retryable", async () => {
     () => Promise.resolve({ LocationConstraint: "ap-southeast-2" }),
   );
 
-  await assert.rejects(wasabi.getBucketRegion("retryable-bucket"), (received) => received === error);
+  await assert.rejects(
+    wasabi.getBucketRegion("retryable-bucket"),
+    (received) => received instanceof StorageProviderError && received.cause === error,
+  );
   assert.deepEqual(await wasabi.getBucketRegion("retryable-bucket"), {
     region: "ap-southeast-2",
     longDescription: "Wasabi AP Southeast 2 (Sydney)",
@@ -292,7 +346,135 @@ test("malformed and unrelated redirect errors are propagated", async (t) => {
   for (const [index, error] of errors.entries()) {
     await t.test(`error ${index + 1}`, async () => {
       locationResponses.push(() => Promise.reject(error));
-      await assert.rejects(wasabi.getBucketRegion(`invalid-redirect-${index}`), (received) => received === error);
+      await assert.rejects(
+        wasabi.getBucketRegion(`invalid-redirect-${index}`),
+        (received) => received instanceof StorageProviderError && received.cause === error,
+      );
     });
   }
+});
+
+test("SDK service failures retain their cause and fixed operation", async () => {
+  const cause = Object.assign(new S3ServiceException("provider sentinel"), {
+    $metadata: { httpStatusCode: 403 },
+    status: 403,
+    endpoint: "https://private-endpoint.test",
+  });
+  commandFailures.set(ListBucketsCommand, cause);
+
+  await assert.rejects(wasabi.getListBuckets(), (error) => {
+    assert.ok(error instanceof StorageProviderError);
+    assert.equal(error.operation, "ListBuckets");
+    assert.equal(error.cause, cause);
+    assert.equal(error.status, undefined);
+    assert.equal(error.endpoint, undefined);
+    return true;
+  });
+});
+
+test("GetBucketLocation and ListObjectsV2 terminal failures are wrapped at their SDK boundaries", async () => {
+  const locationFailure = Object.assign(new Error("location secret"), {
+    $metadata: { httpStatusCode: 503 },
+  });
+  commandFailures.set(GetBucketLocationCommand, locationFailure);
+  await assert.rejects(
+    wasabi.getBucketRegion("wrapped-location-failure"),
+    (error) => error instanceof StorageProviderError &&
+      error.operation === "GetBucketLocation" && error.cause === locationFailure,
+  );
+
+  locationResponses.push(() => Promise.resolve({ LocationConstraint: "us-east-2" }));
+  const listFailure = Object.assign(new Error("list secret"), { code: "ECONNRESET" });
+  commandFailures.set(ListObjectsV2Command, listFailure);
+  await assert.rejects(
+    wasabi.getListObjects({ Bucket: "wrapped-list-failure" }),
+    (error) => error instanceof StorageProviderError &&
+      error.operation === "ListObjectsV2" && error.cause === listFailure,
+  );
+});
+
+test("known timeout, network, and DNS failures are wrapped but unknown errors are preserved", async () => {
+  const failures = [
+    Object.assign(new Error("timeout sentinel"), { name: "TimeoutError" }),
+    Object.assign(new Error("connection sentinel"), { code: "ECONNREFUSED" }),
+    Object.assign(new Error("DNS sentinel"), { code: "ENOTFOUND" }),
+    Object.assign(new Error("retry sentinel"), { code: "EAI_AGAIN" }),
+  ];
+  for (const cause of failures) {
+    commandFailures.set(ListBucketsCommand, cause);
+    await assert.rejects(
+      wasabi.getListBuckets(),
+      (error) => error instanceof StorageProviderError && error.cause === cause,
+    );
+  }
+
+  const unknownFailures = [
+    Object.assign(new TypeError("programming sentinel"), { status: 503 }),
+    Object.assign(new Error("configuration sentinel"), { statusCode: 502 }),
+    Object.assign(new Error("metadata sentinel"), { $metadata: {} }),
+  ];
+  for (const failure of unknownFailures) {
+    commandFailures.set(ListBucketsCommand, failure);
+    await assert.rejects(wasabi.getListBuckets(), (received) => received === failure);
+  }
+});
+
+test("provider failures map to safe 502 responses through the real route and handler", async () => {
+  const secret = "storage-private-sentinel";
+  const cause = Object.assign(new S3ServiceException(secret), {
+    $metadata: { httpStatusCode: 403 },
+    Endpoint: `https://${secret}.wasabisys.com`,
+  });
+  cause.stack += `\n${secret}`;
+  commandFailures.set(ListBucketsCommand, cause);
+
+  const logRecords = [];
+  const originalConsoleError = console.error;
+  console.error = (record) => logRecords.push(record);
+  let response;
+  try {
+    response = await requestThroughStorageRoute("/buckets/");
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  assert.equal(response.status, 502);
+  assert.deepEqual(JSON.parse(response.body), { error: "Bad Gateway" });
+  assert.equal(response.body.includes(secret), false);
+  assert.deepEqual(logRecords.map((record) => JSON.parse(record)), [{
+    category: "storage",
+    status: 502,
+    operation: "ListBuckets",
+    providerStatus: 403,
+  }]);
+  assert.equal(logRecords.join(" ").includes(secret), false);
+});
+
+test("local signing failures remain safe 500 responses through the real route", async () => {
+  const secret = "signed-url-private-sentinel";
+  locationResponses.push(() => Promise.resolve({ LocationConstraint: "us-east-2" }));
+  responses.push({ Contents: [{ Key: secret }], KeyCount: 1 });
+  signingFailure = Object.assign(new TypeError(secret), {
+    status: 403,
+    statusCode: 403,
+    endpoint: `https://${secret}.wasabisys.com`,
+  });
+
+  const logRecords = [];
+  const originalConsoleError = console.error;
+  console.error = (record) => logRecords.push(record);
+  let response;
+  try {
+    response = await requestThroughStorageRoute("/buckets/signing-failure/objects/reports");
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(JSON.parse(response.body), { error: "Internal Server Error" });
+  assert.equal(response.body.includes(secret), false);
+  assert.deepEqual(logRecords.map((record) => JSON.parse(record)), [
+    { category: "application", status: 500 },
+  ]);
+  assert.equal(logRecords.join(" ").includes(secret), false);
 });

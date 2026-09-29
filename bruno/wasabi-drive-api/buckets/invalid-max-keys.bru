@@ -1,0 +1,31 @@
+meta {
+  name: Reject invalid MaxKeys
+  type: http
+  seq: 5
+  tags: [
+    regression
+  ]
+}
+
+get {
+  url: {{baseUrl}}/buckets/{{bucketName}}/objects{{objectPrefix}}
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{accessToken}}
+}
+
+query {
+  MaxKeys: 0
+}
+
+tests {
+  test("rejects an out-of-range MaxKeys value", function() {
+    expect(res.status).to.equal(400);
+    expect(res.body).to.deep.equal({
+      error: "MaxKeys must be an integer between 1 and 1000."
+    });
+  });
+}

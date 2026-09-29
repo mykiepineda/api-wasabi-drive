@@ -6,6 +6,14 @@ Backend API for browsing Wasabi Drive buckets and generating temporary object ac
 
 `GET /health` returns HTTP 200 with the fixed body `{ "status": "ok" }`. It is intentionally unauthenticated and shallow; it does not probe Wasabi, Entra, or other dependencies.
 
+## Bucket API errors and object listing
+
+`MaxKeys` is optional on object-list requests. When supplied, it must contain only decimal digits and resolve to an integer from 1 through 1000; leading zeroes are accepted. Invalid values return HTTP 400 with `{ "error": "MaxKeys must be an integer between 1 and 1000." }`.
+
+The API returns fixed JSON errors: 401 `Unauthorized`, 403 `Forbidden`, 500 `Internal Server Error`, and 502 `Bad Gateway` for recognized storage-provider or transport failures. Request parsing retains safe 400, 413, and 415 responses. Provider details are not returned to clients.
+
+The Bruno regression request `buckets/invalid-max-keys.bru` checks the invalid `MaxKeys=0` response without modifying storage.
+
 ## Wasabi regions
 
 `WASABI_SERVICE_URL` and `WASABI_REGION` configure the bootstrap/default S3 client. It uses those settings for account-level bucket listing and initial bucket-region discovery. They are not a guarantee that every bucket is in the same region, and separate environment variables per bucket or region are not needed.

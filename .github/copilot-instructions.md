@@ -1,819 +1,186 @@
-# Wasabi Drive Backend — GitHub Copilot Instructions
+# Wasabi Drive Backend - GitHub Copilot Instructions
 
-## Project role
+## Ownership and working agreement
 
-Wasabi Drive is an existing production application and an incremental modernization project.
+Wasabi Drive is a deployed personal application and an enterprise-architecture/cloud-engineering learning project. The developer is the technical owner and architectural decision-maker. ChatGPT assists with architecture, task specifications and review; Copilot implements only the selected task.
 
-The developer is the technical owner and architectural decision-maker.
+Prefer small, reviewable changes. Do not independently redesign architecture, expand a task, change cloud permissions, upgrade dependencies or deploy. When explaining a newly introduced acronym or technology, expand it and briefly explain its relevance to Wasabi Drive.
 
-Copilot is an implementation assistant. Make only the explicitly requested change, preserve working behavior, and do not independently redesign the backend, authentication model, AWS architecture, deployment model, Serverless configuration, storage integration, or CI/CD model.
+Read the current source and the owner's latest task prompt. Source is authoritative for existing behavior; the owner's task specification defines the intended change. Report a material conflict rather than guessing. A roadmap item is not permission to implement it.
 
-Prefer focused, reviewable changes over broad cleanup.
+## Current phase and task gate
 
-## Current phase
+Current phase: **Phase 7 - Production Reliability and Observability**.
 
-Current modernization phase:
+Identity modernization, private-object access, cursor pagination, multi-region bucket support, and Phase 6 Continuous Integration / Continuous Delivery (CI/CD) are complete. Do not repeat them.
 
-**Phase 6 — CI/CD and Deployment Safety**
+The initial implementation task is **Task 7A - Backend API error boundary and request validation**, on `refactor/api-error-boundary`. Implement only 7A when explicitly instructed. Stop for review afterward.
 
-CI/CD = Continuous Integration / Continuous Delivery.
+Later backend tasks, requiring separate approval and branches:
 
-Completed work:
+- 7B: structured request/error logging, `feat/structured-request-logging`.
+- 7C: evaluate minimal operational visibility, `ops/backend-runtime-alerts`.
 
-- 6A — backend pull-request CI;
-- 6B — frontend pull-request CI;
-- 6C — deployment command normalization;
-- 6D — automated backend `test` deployment using GitHub Actions, GitHub OIDC, AWS STS, and Serverless Framework;
-- 6E — backend test-stage verification;
-- 6F — stable frontend test Firebase Hosting environment;
-- 6G — automated frontend `test` deployment using GitHub OIDC and Google Workload Identity Federation;
-- 6H-A — controlled backend production promotion using an exact tested `master` SHA;
-- Serverless Framework version constrained to the approved 4.42.x line.
+Frontend tasks 7D/7E belong to the frontend repository and are not backend work.
 
-The active task is:
+## Established architecture
 
-**Task 6H-A.1 — Health endpoint and automated deployed-API smoke verification**
+- Node.js 24, Express 4, CommonJS JavaScript.
+- Amazon Web Services (AWS) Lambda runs the application; API Gateway REST API forwards requests to Express.
+- Serverless Framework v4 and CloudFormation manage deployment. `serverless.yml` enforces `frameworkVersion: "~4.42.0"`; preserve the existing manifest and lockfile rather than changing their ranges in 7A.
+- AWS Software Development Kit (SDK) for JavaScript v3 accesses Wasabi's Simple Storage Service (S3)-compatible private storage.
+- Separate `test` and `prd` deployment stages.
 
-Do not start Task 6H-B frontend production promotion.
+Preserve this dependency direction:
 
-## Latest authoritative backend state
+`HTTP / Express route -> application/service -> storage/infrastructure -> AWS SDK -> Wasabi`
 
-Treat the latest `master` source as authoritative.
+Hypertext Transfer Protocol (HTTP) response mapping belongs at the API boundary, not in the storage implementation. Services and storage must not import Express or HTTP route modules.
 
-The current backend uses:
+Current source map:
 
-- Node.js 24;
-- Express 4;
-- CommonJS;
-- AWS Lambda;
-- API Gateway REST API;
-- Serverless Framework v4.42.x;
-- CloudFormation;
-- AWS SDK for JavaScript v3;
-- Wasabi S3-compatible object storage;
-- stages `test` and `prd`.
+- `src/app.js`: parsers, Cross-Origin Resource Sharing (CORS), health route, protected bucket mount, Lambda adapter export.
+- `src/api/buckets.js`: bucket routes.
+- `src/service/buckets.js`: service orchestration and adding object `AccessUrl` values.
+- `src/storage/wasabi.js`: SDK calls, region discovery/cache, regional clients and signing.
+- `src/authentication/`: Entra token validation and trusted-user authorization.
+- `test/`: existing Node.js test runner tests.
+- `bruno/wasabi-drive-api/`: read-only integration requests.
 
-Current HTTP construction is in `src/app.js`.
+## Security invariants
 
-Protected bucket routes are mounted at `/buckets` behind:
-
-1. Microsoft Entra access-token authentication;
-2. trusted-user authorization;
-3. `src/api/buckets.js`.
-
-The backend exposes a shallow unauthenticated `GET /health` route returning `{ "status": "ok" }`; it does not probe downstream dependencies.
-
-The current Bruno integration runner is:
-
-`scripts/run-integration.js`
-
-The current target validator is:
-
-`scripts/integration-target.js`
-
-The current integration script is:
-
-`npm run test:integration`
-
-The current Bruno collection already contains a read-only unauthorized check:
-
-`bruno/wasabi-drive-api/buckets/unauthorized.bru`
-
-It expects:
-
-```text
-GET /buckets/
--> 401
--> { "error": "Unauthorized" }
-```
-
-The current full `regression` integration scope is intentionally limited to:
-
-- `local`;
-- `development`;
-- `test`.
-
-The `deployment-smoke` scope checks only `/health` and unauthenticated `/buckets/`, and may target `local`, `development`, `test`, or `prd` only when the target and URL stage match.
-
-For `INTEGRATION_TARGET=test`, the full regression scope requires a short-lived delegated Entra access token.
-
-Do not change that authentication model during this task.
-
-## Architecture and security invariants
-
-Preserve the established separation of concerns:
-
-HTTP / Express route
--> application/service layer
--> infrastructure/storage implementation
--> Wasabi / AWS SDK.
-
-The health route is an HTTP operational concern and does not require a new application service, storage method, framework, abstraction, or dependency.
+Microsoft Authentication Library (MSAL) obtains the frontend's Microsoft Entra OAuth 2.0 access token. OAuth 2.0 authorizes API access; OpenID Connect (OIDC) provides the identity layer used by sign-in and deployment federation. The backend validates the bearer access token and then enforces trusted-user authorization.
 
 Preserve:
 
-React SPA
--> MSAL
--> Microsoft Entra
--> OAuth 2.0 / OpenID Connect access token
--> API Gateway
--> Express authentication
--> application authorization
--> Wasabi.
+- mandatory Entra validation for `/buckets`;
+- signature, issuer, audience, expiry and required-scope checks;
+- trusted tenant/user Object ID checks and fail-closed configuration;
+- authentication before authorization and bucket-query validation;
+- `401` with `{ "error": "Unauthorized" }` for missing/invalid authentication;
+- `403` with `{ "error": "Forbidden" }` for missing required scope or unauthorized authenticated users;
+- unexpected verifier failures continuing to the server-error boundary, not being mislabeled as invalid credentials.
 
-The backend remains the security authority.
+The backend is the security authority. CORS is a browser access policy, not authentication. API Gateway API keys are not user authentication. Do not restore MongoDB/password/bcrypt/UUID authentication, frontend-only authorization, or an authentication bypass.
 
-Do not restore:
+Wasabi credentials stay server-side. Objects stay private. `AccessUrl` is generated server-side; never introduce public/raw object URLs or browser signing. Preserve the current 3600-second signing duration.
 
-- MongoDB authentication;
-- bcrypt password authentication;
-- UUID authentication;
-- API Gateway API-key authentication;
-- frontend-only authorization.
+`GET /health` remains shallow, unauthenticated and exactly `200` with `{ "status": "ok" }`. It must not call Wasabi or Entra, or expose configuration or release details in 7A.
 
-Do not weaken authentication on `/buckets`.
+## Storage and pagination invariants
 
-Do not add a CI-specific Entra application identity or app role.
+The configured Wasabi endpoint/region is the bootstrap client for account-level listing and bucket-region discovery, not a claim that all buckets use that region.
 
-Do not store:
+Preserve the implemented multi-region behavior:
 
-- user passwords;
-- refresh tokens;
-- bearer tokens;
-- Entra client secrets;
-- long-lived AWS access keys
+- `GetBucketLocation` discovery;
+- recognition of the existing validated `307 TemporaryRedirect` response before error translation;
+- bucket-specific Wasabi hostname validation and canonical HTTPS regional endpoints;
+- region/client caches and eviction of a failed region-discovery promise;
+- existing empty-location, `EU`, and US East 1 alias handling;
+- use of the correct regional client for listing and presigning.
 
-in GitHub merely to automate integration testing.
+Never follow an arbitrary provider-supplied endpoint, broaden redirect acceptance, add a new retry loop or change caching policy in 7A.
 
-## Task 6H-A.1 objective
+Preserve `ListObjectsV2`, `Delimiter: "/"`, prefixes, opaque continuation tokens, all successful response fields, and per-object `AccessUrl`. An opaque token is provider-owned data: do not decode, interpret, reconstruct or validate it as a filename. Do not restore `TotalKeyCount` or full-list traversal. A warm browse normally uses one listing page plus local signing; initial region discovery may add a request.
 
-Add a deliberately shallow, unauthenticated health endpoint and use Bruno after backend deployments to verify two deployment-critical behaviors:
+## Task 7A design constraints
 
-```text
-GET /health
--> 200
--> { "status": "ok" }
+Use a small application-owned error model: at most `InputValidationError` and `StorageProviderError`, with no hierarchy/framework. Place shared errors outside HTTP route modules. Retain an original provider error as an internal `cause`, never as public response data.
 
-GET /buckets/
-without Authorization
--> 401
--> { "error": "Unauthorized" }
-```
+Use one final Express error-handling middleware after routes. Express 4 asynchronous handlers must explicitly forward caught errors with `next(error)`. Delegate with `next(error)` when `res.headersSent` is true; do not send twice or swallow startup failures.
 
-These checks verify different boundaries.
+The selected public contract is JSON (JavaScript Object Notation) with one `error` string:
 
-`/health` verifies:
+| Condition | Status | Body |
+| --- | --- | --- |
+| Invalid `MaxKeys` | 400 | `{ "error": "MaxKeys must be an integer between 1 and 1000." }` |
+| Missing/invalid authentication | 401 | `{ "error": "Unauthorized" }` |
+| Authenticated but unauthorized / missing required scope | 403 | `{ "error": "Forbidden" }` |
+| Unexpected application/configuration/local signing error | 500 | `{ "error": "Internal Server Error" }` |
+| Recognized Wasabi service/transport failure | 502 | `{ "error": "Bad Gateway" }` |
 
-```text
-API Gateway
--> Lambda
--> Express startup
--> HTTP routing
-```
+Use `502`, not a blanket `503`: this task represents failure at the storage boundary, without asserting a maintenance window, transient overload or known retry interval. Do not invent `Retry-After`, automatic retries, or a provider-to-client status translation catalog.
 
-The unauthorized `/buckets/` check verifies:
+Recognize remote SDK/service and known transport failures narrowly at SDK call boundaries. Do not wrap every exception in the storage module as a provider failure. Local programming, credential-configuration and local signing defects must still be `500`. Handle valid region redirects before wrapping failures. Provider `401`/`403` must never become Entra authentication/authorization responses.
 
-```text
-protected route
--> Entra authentication middleware is active
--> missing access token is rejected
-```
+Never derive a public status/message from arbitrary `error.status`, `error.statusCode`, `error.message`, `$metadata`, `$response` or `cause`. Only application-owned errors and the task's narrow existing-parser error allowlist may select a public client response. Preserve existing parser/routing client-error semantics rather than turning malformed input or body-limit errors into `500`. The focused task prompt defines that allowlist.
 
-The automated deployment smoke scope must not call Wasabi and must not require a user token.
+Do not change existing authentication modules just to make their already-stable `401`/`403` responses pass through the new handler. Successful responses and existing not-found routing behavior remain unchanged.
 
-The existing full authenticated Bruno regression remains a manual `test`-stage promotion gate for now.
+### MaxKeys
 
-## Health endpoint contract
+Validate at the bucket HTTP boundary, after existing authentication/authorization and before the service/storage call:
 
-Add:
+- omitted means omitted; do not introduce a new default;
+- supplied input must be one string containing only ASCII decimal digits;
+- convert once to a safe integer in the inclusive range 1 through 1000;
+- leading zeroes are allowed; whitespace, signs, decimals, exponent/hex notation, junk suffixes, empty values, arrays, objects and repeated parameters are rejected;
+- pass the resulting number to service/storage; remove permissive `parseInt` coercion there;
+- do not clamp, silently replace invalid input, change query-parser configuration or add a validation library.
 
-```http
-GET /health
-```
+### Minimal diagnostics in 7A
 
-Expected response:
+The error boundary may emit one minimal server-side record per `5xx`, using ordinary `console` and an allowlist of fixed category, selected HTTP status, fixed SDK operation and numeric provider status. Do not add request lifecycle logging, correlation IDs, release injection, telemetry dependencies or cloud configuration in 7A.
 
-```json
-{
-  "status": "ok"
-}
-```
+Never log or return raw request/response/error objects, headers, bodies, bearer tokens, credentials, private keys, continuation tokens, object keys, full query strings or complete presigned URLs. Do not dump an unsanitized stack/message/cause: those can contain sensitive data. Keep raw causes internal and emit only deliberately selected safe fields. Avoid duplicate logging in route/service/storage catches.
 
-Expected HTTP status:
+## Later observability tasks: reference only
 
-`200`
+When separately approved, 7B should use structured JSON and existing Amazon CloudWatch Logs, AWS's existing log destination for this Lambda. Prefer ordinary application logging unless a library has a concrete benefit.
 
-The endpoint must be unauthenticated.
+Evaluate an existing API Gateway/Lambda request identifier before inventing a correlation ID. A correlation ID ties events to one request. Evaluate stage, route template, operation, status, duration and deployed Git commit SHA (Secure Hash Algorithm-based commit identifier). A release identifier ties runtime errors to the exact deployed source and workflow.
 
-Place it so that it is not wrapped by the `/buckets` Entra authentication and trusted-user authorization middleware.
+For production, the deployed source SHA may differ from the workflow-dispatch SHA. Use the verified checked-out commit, not an assumption about `github.sha`. No workflow or runtime-configuration edits are authorized by this reference section.
 
-Do not add:
+7C should assess useful Lambda/API failure signals and cost before adding alarms. Practical documented CloudWatch checks may be enough for a personal project. No external observability platform, broad dashboard suite or distributed-tracing infrastructure is pre-approved.
 
-- Wasabi calls;
-- Microsoft Entra calls;
-- AWS calls;
-- database calls;
-- downstream dependency probes;
-- environment dumps;
-- version dumps;
-- account IDs;
-- tenant IDs;
-- secrets;
-- stack traces.
+## Completed CI/CD: preserve
 
-Do not introduce `/liveness`, `/readiness`, or a health-check framework.
+Do not modify `.github/workflows/*`, deployment scripts, `serverless.yml`, GitHub Environments or cloud permissions unless the owner explicitly authorizes a concrete change for the selected task.
 
-The endpoint should remain intentionally shallow.
+Preserve pinned actions, Node.js 24 and clean `npm ci`:
 
-No `serverless.yml` change should be needed because the existing API Gateway proxy routing already forwards application paths to Express.
+- pull requests (PRs) to protected `master`: tests only, no deployment capability;
+- merge to `master`: automatic backend `test` deployment and deployed smoke checks;
+- production: manual full 40-character source-SHA promotion from `master` history, detached checkout, SHA verification, re-testing, protected `prd` Environment and serialized deployment;
+- rollback: manually promote a known-good historical `master` SHA, preferably one including the current health/smoke capability.
 
-If implementation appears to require a Serverless/API Gateway configuration change, stop and report why.
+GitHub OIDC exchanges workflow identity for short-lived AWS Security Token Service (STS) credentials through dedicated test/production Identity and Access Management (IAM) roles. Preserve that separation. Do not introduce permanent AWS deployment keys, broaden IAM or automatically deploy production on merge.
 
-## Health endpoint unit/regression test
+## Tests, integration safety and change management
 
-Add or extend backend tests so that `npm test` proves:
+Use one focused branch per task; never commit to `master`, use a Phase 7 mega-branch, force-push, discard user changes, or create a temporary integration branch without approval.
 
-1. `/health` responds with HTTP `200`;
-2. the JSON body is exactly or equivalently `{ status: "ok" }`;
-3. no bearer token is required.
+Before implementation inspect branch/status and record the starting commit. Start from current `master` using fast-forward-only synchronization when safe. Do not silently move a dirty worktree. Do not commit, push, create/merge a PR or deploy unless explicitly requested.
 
-Prefer extending the existing application-enforcement test structure if that remains simple and focused.
-
-Do not weaken or delete existing authentication tests.
-
-Existing `/buckets` authentication enforcement must continue to pass.
-
-## Bruno deployment-smoke scope
-
-Add a new integration scope:
-
-`deployment-smoke`
-
-The existing scope remains:
-
-`regression`
-
-Update `scripts/run-integration.js` so its supported scope map includes:
+For 7A run on Node.js 24:
 
 ```text
-regression
-deployment-smoke
-```
-
-`regression` must continue to select the existing `regression` Bruno tag.
-
-`deployment-smoke` must select a new Bruno tag:
-
-`deployment-smoke`
-
-Unknown scopes must still fail closed.
-
-Do not change the default scope from `regression`.
-
-## Bruno health request
-
-Add a new Bruno request for:
-
-```text
-GET {{baseUrl}}/health
-```
-
-with:
-
-- no authentication;
-- tag `deployment-smoke`;
-- assertion that status is `200`;
-- assertion that response body represents `{ "status": "ok" }`.
-
-A suitable location is:
-
-`bruno/wasabi-drive-api/health/health.bru`
-
-Do not add the health request to the full authenticated `regression` scope unless there is a concrete reason. The purpose here is deployed-service smoke verification.
-
-## Bruno unauthorized request
-
-Preserve the existing `regression` tag on:
-
-`bruno/wasabi-drive-api/buckets/unauthorized.bru`
-
-Add the new tag:
-
-`deployment-smoke`
-
-The request itself must remain unauthenticated.
-
-Preserve its current contract:
-
-```text
-GET {{baseUrl}}/buckets/
--> 401
--> { "error": "Unauthorized" }
-```
-
-Do not change the protected endpoint to make the smoke test pass.
-
-## Integration target safety model
-
-The current target validator deliberately prevents the full regression suite from targeting production.
-
-Preserve that protection.
-
-Update `scripts/integration-target.js` so target permission is scope-aware.
-
-Required target matrix:
-
-```text
-scope = regression
-
-local        allowed
-development  allowed
-test         allowed
-prd          forbidden
-
-
-scope = deployment-smoke
-
-local        allowed
-development  allowed
-test         allowed
-prd          allowed
-```
-
-For `local` and `development`, preserve the localhost / `127.0.0.1` restriction.
-
-For `test`, require:
-
-- HTTPS;
-- API Gateway hostname shape;
-- stage path `test`.
-
-For `prd`, when and only when scope is `deployment-smoke`, require:
-
-- HTTPS;
-- API Gateway hostname shape;
-- stage path `prd`.
-
-A production API Gateway URL must remain rejected for scope `regression`.
-
-A `/test` URL must not be accepted when target is `prd`.
-
-A `/prd` URL must not be accepted when target is `test`.
-
-Do not weaken target validation to a generic arbitrary HTTPS URL.
-
-Do not allow the full regression suite to run against `prd`.
-
-## Integration target tests
-
-Extend `test/integration-target.test.js` to cover the new behavior.
-
-At minimum test:
-
-- existing local target remains accepted;
-- existing test API Gateway target remains accepted for `regression`;
-- production target remains rejected for `regression`;
-- test API Gateway URL is accepted for `deployment-smoke`;
-- production API Gateway `/prd` URL is accepted for `deployment-smoke` with target `prd`;
-- production target rejects a `/test` URL;
-- test target rejects a `/prd` URL;
-- malformed/missing `BASE_URL` remains rejected;
-- unknown/unsupported scope fails closed if validation handles scope directly.
-
-Do not weaken existing tests.
-
-## Access-token rules
-
-Preserve the current full-regression token rule:
-
-```text
-scope = regression
-target = test
--> non-blank INTEGRATION_ACCESS_TOKEN required
-```
-
-For:
-
-```text
-scope = deployment-smoke
-target = test or prd
-```
-
-do **not** require `INTEGRATION_ACCESS_TOKEN`.
-
-The deployment-smoke requests must not use an access token.
-
-Do not add any GitHub secret for an Entra user token.
-
-Do not introduce username/password automation.
-
-## GitHub Environment prerequisite
-
-The workflows should read a new non-secret GitHub Environment variable:
-
-`INTEGRATION_BASE_URL`
-
-The technical owner will configure it externally.
-
-Expected values for the current environments are the stable API Gateway stage roots, with no trailing slash:
-
-```text
-test:
-https://xsfyrajqg5.execute-api.ap-southeast-2.amazonaws.com/test
-
-prd:
-https://5s4gzdceqa.execute-api.ap-southeast-2.amazonaws.com/prd
-```
-
-Do not hardcode these URLs in workflow source.
-
-Map the GitHub variable to the runner's existing variable name:
-
-```yaml
-BASE_URL: ${{ vars.INTEGRATION_BASE_URL }}
-```
-
-The URLs are configuration, not secrets.
-
-## Backend test deployment workflow
-
-Update:
-
-`.github/workflows/backend-test-deploy.yml`
-
-Preserve all existing deployment/security behavior.
-
-After the existing successful:
-
-```text
-npm run deploy:test
-```
-
-add a deployed-API smoke step.
-
-Use:
-
-```yaml
-env:
-  INTEGRATION_TARGET: test
-  BASE_URL: ${{ vars.INTEGRATION_BASE_URL }}
-```
-
-Run:
-
-```bash
-npm run test:integration -- deployment-smoke
-```
-
-The smoke step must execute only after the deployment step succeeds.
-
-Do not provide:
-
-`INTEGRATION_ACCESS_TOKEN`
-
-to the automated smoke scope.
-
-Do not automatically run the full authenticated `regression` scope in GitHub Actions.
-
-Do not change the AWS test deployment role or credentials model.
-
-## Backend production promotion workflow
-
-Update:
-
-`.github/workflows/backend-prd-deploy.yml`
-
-Preserve all existing 6H-A controls:
-
-- manual `workflow_dispatch` only;
-- required full `source_sha`;
-- `master`-only execution;
-- GitHub Environment `prd`;
-- exact SHA validation;
-- full-history checkout;
-- detached exact-SHA checkout;
-- `npm ci`;
-- `npm test`;
-- GitHub OIDC;
-- dedicated production AWS deploy role;
-- `npm run deploy:prd`;
-- production concurrency;
-- no permanent AWS deployment keys.
-
-After the existing successful:
-
-```text
-npm run deploy:prd
-```
-
-add a deployed-API smoke step.
-
-Use:
-
-```yaml
-env:
-  INTEGRATION_TARGET: prd
-  BASE_URL: ${{ vars.INTEGRATION_BASE_URL }}
-```
-
-Run:
-
-```bash
-npm run test:integration -- deployment-smoke
-```
-
-Do not provide `INTEGRATION_ACCESS_TOKEN`.
-
-Do not run the full authenticated Bruno `regression` scope against production.
-
-If smoke verification fails after deployment, the workflow should fail visibly. Do not automatically broaden IAM, retry indefinitely, redeploy, or roll back.
-
-## AWS credential exposure during smoke
-
-The smoke test does not need AWS credentials.
-
-Do not deliberately pass Serverless, Wasabi, or application secrets into the smoke step.
-
-The existing Serverless/Wasabi/Entra deployment configuration remains scoped to the deploy step.
-
-If the AWS OIDC action's temporary AWS session environment remains available to later steps automatically, do not add new code solely to redesign the whole workflow for credential isolation during this task.
-
-Do not explicitly copy AWS credentials into the smoke step.
-
-## Bruno documentation
-
-Update:
-
-`bruno/wasabi-drive-api/README.md`
-
-Document both scopes clearly.
-
-### Full regression
-
-```bash
-npm run test:integration
-```
-
-or explicitly:
-
-```bash
-npm run test:integration -- regression
-```
-
-Safety:
-
-- read-only;
-- `local`, `development`, or `test` only;
-- never `prd`;
-- `test` requires a short-lived delegated Entra access token;
-- remains a manual test-stage promotion gate.
-
-### Deployment smoke
-
-```bash
-npm run test:integration -- deployment-smoke
-```
-
-Safety:
-
-- contains only `/health` 200 and unauthenticated `/buckets/` 401 checks;
-- no access token required;
-- no Wasabi read/write operation;
-- permitted against `local`, `development`, `test`, and `prd` only when the scope-aware target/base URL validation matches;
-- CI uses it for post-deployment verification of `test` and `prd`.
-
-Do not document real bearer tokens or secrets.
-
-## Main README documentation
-
-Update `README.md` to document:
-
-- `GET /health`;
-- response `{ "status": "ok" }`;
-- it is intentionally unauthenticated and shallow;
-- it does not probe Wasabi or Entra;
-- backend `test` deployment now runs automated post-deployment smoke verification;
-- production promotion also runs the same non-destructive smoke verification;
-- smoke verifies health `200` and protected-route `401`;
-- the full authenticated Bruno regression remains manual against `test`;
-- the full regression scope remains blocked from `prd`;
-- production rollback remains the existing known-good exact-SHA promotion process.
-
-Keep documentation concise.
-
-## GitHub Actions pins
-
-Do not change approved action versions or pins during this task unless a concrete defect requires review.
-
-Current approved actions include:
-
-```text
-actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
-```
-
-Do not introduce additional third-party GitHub Actions.
-
-## Expected source changes
-
-Expected Task 6H-A.1 changes are limited to files such as:
-
-- `src/app.js`;
-- `test/app-enforcement.test.js` or one narrowly focused health test file;
-- `scripts/integration-target.js`;
-- `scripts/run-integration.js`;
-- `test/integration-target.test.js`;
-- `bruno/wasabi-drive-api/health/health.bru`;
-- `bruno/wasabi-drive-api/buckets/unauthorized.bru`;
-- `bruno/wasabi-drive-api/README.md`;
-- `.github/workflows/backend-test-deploy.yml`;
-- `.github/workflows/backend-prd-deploy.yml`;
-- `.github/copilot-instructions.md`;
-- `README.md`.
-
-No changes are expected to:
-
-- `src/api/buckets.js`;
-- application/service bucket logic;
-- storage/Wasabi implementation;
-- authentication token validation;
-- trusted-user authorization;
-- `serverless.yml`;
-- `package.json`;
-- `package-lock.json`;
-- `.env.example`;
-- AWS IAM;
-- Entra app registrations.
-
-If implementation appears to require those changes, stop and report why instead of expanding scope automatically.
-
-## Branch and change management
-
-Use branch:
-
-`ci/backend-health-smoke`
-
-Do not commit directly to `master`.
-
-Keep this as one focused PR.
-
-Do not perform unrelated cleanup.
-
-Do not remediate npm audit findings in this task.
-
-Do not upgrade dependencies.
-
-## Local validation
-
-Before commit run:
-
-```bash
 npm ci
+npm test
+# Implement only the approved task, then:
 npm test
 git diff --check
 git status --short
 ```
 
-Also validate the new smoke scope locally without touching cloud environments.
+Use the existing `node:test` and `node:assert/strict` patterns, local HTTP test servers and SDK/dependency stubs. No test framework/dependency is needed. Test actual route wiring as well as helpers. Restore mocks, module caches and environment changes; close local servers.
 
-With the local backend running and appropriate required backend configuration, use:
+Preserve all security, pagination, signing, regional-routing and integration-target tests. Assertions about raw error identity may be updated to assert the approved wrapper and original `cause`; do not remove their retry/cache/redirect safety assertions. Numeric internal `MaxKeys` fixtures may change with the deliberate boundary normalization.
 
-```text
-INTEGRATION_TARGET=local
-BASE_URL=http://localhost:8080
-npm run test:integration -- deployment-smoke
-```
+Bruno full regression (`npm run test:integration`) remains read-only, manual and restricted to `local`, `development` or `test`; never `prd`. The `test` target requires a short-lived delegated Entra access token. Use it only when a safe target/configuration and the owner's permission are available. Do not print/store tokens or weaken target validation. Otherwise report that integration was not run and why.
 
-The local smoke scope should require no `INTEGRATION_ACCESS_TOKEN`.
+`deployment-smoke` remains only `/health` 200 and unauthenticated `/buckets/` 401, with no token or Wasabi operation. Its existing scope/target checks and approved production use are unchanged. Do not add authenticated requests to that tag.
 
-Do not run a cloud deployment from the feature branch.
+Expected 7A areas: `src/app.js`, `src/api/buckets.js`, narrowly scoped error/validation helpers, SDK failure translation in `src/storage/wasabi.js`, focused tests, and concise README/Bruno documentation. Service orchestration should normally remain unchanged. No package/lockfile changes are expected.
 
-Do not run:
+Prefer proposed commits such as `refactor(api): centralize error handling`, `fix(api): validate MaxKeys`, and `test(api): cover provider and validation failures`. Do not actually commit without instruction.
 
-```bash
-npm run deploy:test
-npm run deploy:prd
-```
+## Explicit non-goals and completion
 
-Do not run the deployment-smoke scope against `test` or `prd` from the feature branch merely to validate the code.
+No Entra/MSAL redesign, CORS changes, Lambda authorizers, API Gateway migration, Express 5, TypeScript, ECMAScript modules (ESM), new database, dependency upgrades, audit auto-fixes, deployment redesign, frontend changes, thumbnails, queue/event infrastructure, viewer features or Phase 8 work.
 
-## Static workflow review
+For 7A also exclude full structured request logging, correlation/release configuration, alarms and changes to workflows or cloud resources.
 
-Before completion, confirm:
-
-1. `/health` is unauthenticated;
-2. `/health` returns 200 and `{ status: "ok" }`;
-3. `/health` does not call Wasabi, Entra, AWS, or another dependency;
-4. `/buckets` remains protected;
-5. existing unauthorized Bruno request still expects 401;
-6. unauthorized Bruno request has both `regression` and `deployment-smoke` tags;
-7. health Bruno request has `deployment-smoke` tag;
-8. default integration scope remains `regression`;
-9. `regression` cannot target `prd`;
-10. `deployment-smoke` can target only correctly matched local/development/test/prd URLs;
-11. `/prd` API URL is required for `INTEGRATION_TARGET=prd`;
-12. `/test` API URL is required for `INTEGRATION_TARGET=test`;
-13. `deployment-smoke` does not require an access token;
-14. `regression` targeting `test` still requires an access token;
-15. test deployment runs smoke only after successful test deploy;
-16. production promotion runs smoke only after successful production deploy;
-17. production workflow remains manual and exact-SHA controlled;
-18. no full Bruno regression is added to production;
-19. no user credential/token secret is introduced;
-20. no AWS IAM changes are made;
-21. no Entra authorization changes are made;
-22. no dependency changes are made;
-23. no feature-branch cloud deployment occurred;
-24. Task 6H-B was not started.
-
-## First cloud validation after merge
-
-Before merging, the technical owner must configure:
-
-```text
-GitHub Environment test:
-INTEGRATION_BASE_URL = test API Gateway stage URL
-
-GitHub Environment prd:
-INTEGRATION_BASE_URL = production API Gateway stage URL
-```
-
-After merge to `master`:
-
-1. normal backend PR CI must already have passed;
-2. the existing automatic backend `test` deployment runs;
-3. after deployment, `deployment-smoke` must pass:
-   - `/health` = 200;
-   - unauthenticated `/buckets/` = 401;
-4. manually run the existing authenticated full Bruno regression against `test`;
-5. verify the frontend test site;
-6. promote the exact tested SHA using the existing **Backend Production Promotion** workflow;
-7. production deployment must finish;
-8. production `deployment-smoke` must pass:
-   - `/health` = 200;
-   - unauthenticated `/buckets/` = 401;
-9. perform the normal production frontend smoke verification.
-
-If health or 401 smoke fails, report the exact response/status and stop. Do not weaken authentication or target validation to make the check pass.
-
-## Non-goals
-
-Do not implement during Task 6H-A.1:
-
-- Task 6H-B frontend production promotion;
-- Entra service-principal/app-role CI authentication;
-- storing user access tokens in GitHub;
-- automatic authenticated Bruno regression in CI;
-- full regression against production;
-- Wasabi dependency health checks;
-- readiness/liveness frameworks;
-- observability platform integration;
-- API Gateway health-check infrastructure;
-- AWS IAM changes;
-- Serverless migration;
-- API Gateway migration;
-- dependency upgrades;
-- npm audit remediation;
-- application feature work;
-- CORS changes;
-- unrelated refactoring.
-
-## Completion report
-
-When implementation is complete, stop and report:
-
-- branch used;
-- exact files changed;
-- health endpoint path/status/body;
-- confirmation health is unauthenticated;
-- health unit/regression test added;
-- Bruno health request path/tags/assertions;
-- unauthorized Bruno request tags/assertions;
-- integration scopes supported;
-- exact target matrix enforced;
-- token requirement behavior by scope/target;
-- integration-target tests added/updated;
-- test deployment workflow smoke step;
-- production promotion workflow smoke step;
-- GitHub Environment variable referenced;
-- confirmation no access-token secret was introduced;
-- confirmation full regression remains blocked from `prd`;
-- README changes;
-- Bruno README changes;
-- `npm ci` result;
-- `npm test` result and test count;
-- local `deployment-smoke` result if run;
-- `git diff --check` result;
-- `git status --short` result;
-- confirmation `serverless.yml` was unchanged;
-- confirmation `package.json` and `package-lock.json` were unchanged;
-- confirmation authentication/authorization code was unchanged;
-- confirmation storage/application bucket code was unchanged;
-- confirmation no feature-branch cloud deployment occurred;
-- confirmation Task 6H-B was not started;
-- any unexpected issue.
-
-Do not commit unless explicitly instructed.
-
-Do not continue beyond Task 6H-A.1.
+Stop after the selected task. Report branch/base SHA, exact files changed, error mapping, validation rules, preservation of multi-region behavior, security/non-leakage tests, exact commands/results/counts, integration omissions, diff/status checks, unchanged protected areas, proposed commits and remaining issues. Do not claim tests/deployments that did not run. Do not continue to 7B automatically.

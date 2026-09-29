@@ -3,10 +3,45 @@ const {
   GetBucketLocationCommand,
   ListBucketsCommand,
   ListObjectsV2Command,
+  S3ServiceException,
   S3Client,
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const config = require("../config");
+const { StorageProviderError } = require("../errors");
+
+const transportErrorCodes = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EPIPE",
+]);
+
+const isProviderFailure = (error) => {
+  const status = error?.$metadata?.httpStatusCode;
+  return error instanceof S3ServiceException ||
+    (Number.isInteger(status) && status >= 100 && status <= 599) ||
+    error?.name === "TimeoutError" ||
+    transportErrorCodes.has(error?.code);
+};
+
+const sendProviderRequest = async (client, command, operation) => {
+  try {
+    return await client.send(command);
+  } catch (error) {
+    if (error instanceof StorageProviderError) {
+      throw error;
+    }
+    if (isProviderFailure(error)) {
+      throw new StorageProviderError(operation, error);
+    }
+    throw error;
+  }
+};
 
 const s3 = new S3Client({
   endpoint: config.wasabi.serviceUrl,
@@ -21,7 +56,7 @@ const bucketRegions = new Map();
 const regionalClients = new Map([[config.wasabi.region, s3]]);
 
 const getListBuckets = () => {
-  return s3.send(new ListBucketsCommand({}));
+  return sendProviderRequest(s3, new ListBucketsCommand({}), "ListBuckets");
 };
 
 const getRedirectRegion = (error, bucket) => {
@@ -84,6 +119,9 @@ const discoverBucketRegion = async (name) => {
     const redirectedRegion = getRedirectRegion(error, name);
     if (redirectedRegion) {
       return redirectedRegion;
+    }
+    if (!(error instanceof StorageProviderError) && isProviderFailure(error)) {
+      throw new StorageProviderError("GetBucketLocation", error);
     }
     throw error;
   }
@@ -207,15 +245,19 @@ const getListObjects = async (params) => {
   if (Prefix) {
     bucketParams = { ...bucketParams, Prefix };
   }
-  if (MaxKeys) {
-    bucketParams = { ...bucketParams, MaxKeys: parseInt(MaxKeys) };
+  if (MaxKeys !== undefined) {
+    bucketParams = { ...bucketParams, MaxKeys };
   }
   if (ContinuationToken) {
     bucketParams = { ...bucketParams, ContinuationToken };
   }
 
   const client = await getBucketClient(Bucket);
-  return client.send(new ListObjectsV2Command(bucketParams));
+  return sendProviderRequest(
+    client,
+    new ListObjectsV2Command(bucketParams),
+    "ListObjectsV2",
+  );
 };
 
 const getObjectAccessUrl = async ({ Bucket, Key }) => {

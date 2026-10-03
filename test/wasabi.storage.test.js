@@ -1,3 +1,6 @@
+process.env.ENTRA_TENANT_ID = process.env.ENTRA_TENANT_ID || "11111111-1111-4111-8111-111111111111";
+process.env.ENTRA_TRUSTED_USER_OBJECT_IDS = process.env.ENTRA_TRUSTED_USER_OBJECT_IDS || "11111111-1111-4111-8111-111111111111";
+
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("node:module");
@@ -104,6 +107,7 @@ const wasabi = require(wasabiPath);
 Module._load = originalLoad;
 const storageRouter = require("../src/api/buckets");
 const errorHandler = require("../src/api/errorHandler");
+const { createRequestLogger } = require("../src/observability/requestLogger");
 
 test.after(() => {
   delete require.cache[wasabiPath];
@@ -120,6 +124,7 @@ test.beforeEach(() => {
 
 const requestThroughStorageRoute = (path) => {
   const app = express();
+  app.use(createRequestLogger());
   app.use("/buckets", storageRouter);
   app.use(errorHandler);
 
@@ -441,12 +446,23 @@ test("provider failures map to safe 502 responses through the real route and han
   assert.equal(response.status, 502);
   assert.deepEqual(JSON.parse(response.body), { error: "Bad Gateway" });
   assert.equal(response.body.includes(secret), false);
-  assert.deepEqual(logRecords.map((record) => JSON.parse(record)), [{
-    category: "storage",
+  assert.equal(logRecords.length, 1);
+  const providerLog = JSON.parse(logRecords[0]);
+  assert.deepEqual({
+    status: providerLog.status,
+    errorCategory: providerLog.errorCategory,
+    route: providerLog.route,
+    operation: providerLog.operation,
+    storageOperation: providerLog.storageOperation,
+    providerStatus: providerLog.providerStatus,
+  }, {
     status: 502,
-    operation: "ListBuckets",
+    errorCategory: "storage",
+    route: "/buckets",
+    operation: "listBuckets",
+    storageOperation: "ListBuckets",
     providerStatus: 403,
-  }]);
+  });
   assert.equal(logRecords.join(" ").includes(secret), false);
 });
 
@@ -473,8 +489,18 @@ test("local signing failures remain safe 500 responses through the real route", 
   assert.equal(response.status, 500);
   assert.deepEqual(JSON.parse(response.body), { error: "Internal Server Error" });
   assert.equal(response.body.includes(secret), false);
-  assert.deepEqual(logRecords.map((record) => JSON.parse(record)), [
-    { category: "application", status: 500 },
-  ]);
+  assert.equal(logRecords.length, 1);
+  const signingFailureLog = JSON.parse(logRecords[0]);
+  assert.deepEqual({
+    status: signingFailureLog.status,
+    errorCategory: signingFailureLog.errorCategory,
+    route: signingFailureLog.route,
+    operation: signingFailureLog.operation,
+  }, {
+    status: 500,
+    errorCategory: "application",
+    route: "/buckets/:Bucket/objects/:Prefix(*)",
+    operation: "listObjects",
+  });
   assert.equal(logRecords.join(" ").includes(secret), false);
 });

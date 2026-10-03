@@ -38,25 +38,43 @@ const getProviderStatus = (error) => {
     : undefined;
 };
 
+const getLogMetadata = (error, status) => {
+  if (status >= 500) {
+    const metadata = {
+      errorCategory: error instanceof StorageProviderError ? "storage" : "application",
+    };
+
+    if (error instanceof StorageProviderError) {
+      metadata.storageOperation = error.operation;
+      const providerStatus = getProviderStatus(error);
+      if (providerStatus !== undefined) {
+        metadata.providerStatus = providerStatus;
+      }
+    }
+
+    return metadata;
+  }
+
+  if (status >= 400) {
+    if (error instanceof StorageProviderError) {
+      return { errorCategory: "storage" };
+    }
+    return { errorCategory: "client" };
+  }
+
+  return undefined;
+};
+
 const errorHandler = (error, req, res, next) => {
   if (res.headersSent) {
     return next(error);
   }
 
   const [status, message] = getPublicResponse(error);
-  if (status >= 500) {
-    const record = {
-      category: error instanceof StorageProviderError ? "storage" : "application",
-      status,
-    };
-    if (error instanceof StorageProviderError) {
-      record.operation = error.operation;
-      const providerStatus = getProviderStatus(error);
-      if (providerStatus !== undefined) {
-        record.providerStatus = providerStatus;
-      }
-    }
-    console.error(JSON.stringify(record));
+  const logMetadata = getLogMetadata(error, status);
+  if (logMetadata) {
+    res.locals = res.locals || {};
+    res.locals.logMetadata = logMetadata;
   }
 
   return res.status(status).json({ error: message });

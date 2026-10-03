@@ -82,6 +82,9 @@ jobs:
           echo "Stage: prd"
           echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
+      - name: Export release SHA for deployment
+        run: echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -94,6 +97,7 @@ jobs:
       - name: Deploy production
         env:
           SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+          RELEASE_SHA: ${{ env.RELEASE_SHA }}
           WASABI_SERVICE_URL: ${{ vars.WASABI_SERVICE_URL }}
           WASABI_REGION: ${{ vars.WASABI_REGION }}
           WASABI_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}

@@ -55,8 +55,20 @@ if (trustedUserObjectIds.length === 0) {
   throw new Error("Missing ENTRA_TRUSTED_USER_OBJECT_IDS configuration.");
 }
 
+const isValidReleaseSha = (value) => {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  return /^[0-9a-fA-F]{40}$/.test(value.trim());
+};
+
 const config = {
   port: process.env.PORT || 8080,
+  stage: process.env.DEPLOYMENT_STAGE?.trim() || undefined,
+  releaseSha: isValidReleaseSha(process.env.RELEASE_SHA)
+    ? process.env.RELEASE_SHA.trim().toLowerCase()
+    : undefined,
   wasabi: {
     serviceUrl: process.env.WASABI_SERVICE_URL,
     region: process.env.WASABI_REGION,

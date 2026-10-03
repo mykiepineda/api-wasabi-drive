@@ -6,45 +6,56 @@ Wasabi Drive is a deployed personal application and an enterprise-architecture/c
 
 Prefer small, reviewable changes. Do not independently redesign architecture, expand a task, change cloud permissions, upgrade dependencies or deploy. When explaining a newly introduced acronym or technology, expand it and briefly explain its relevance to Wasabi Drive.
 
-Read the current source and the owner's latest task prompt. Source is authoritative for existing behavior; the owner's task specification defines the intended change. Report a material conflict rather than guessing. A roadmap item is not permission to implement it.
+Read the current source and the owner's latest task prompt before editing. Source is authoritative for existing behavior; the owner's task specification defines the intended change. Report a material conflict rather than guessing. A roadmap item is not permission to implement it.
 
-## Current phase and task gate
+## Current phase and active task
 
 Current phase: **Phase 7 - Production Reliability and Observability**.
 
-Identity modernization, private-object access, cursor pagination, multi-region bucket support, and Phase 6 Continuous Integration / Continuous Delivery (CI/CD) are complete. Do not repeat them.
+Completed and production-validated:
 
-The initial implementation task is **Task 7A - Backend API error boundary and request validation**, on `refactor/api-error-boundary`. Implement only 7A when explicitly instructed. Stop for review afterward.
+- Microsoft Entra authentication and trusted-user authorization;
+- private Wasabi object access with server-generated `AccessUrl` values;
+- AWS SDK for JavaScript v3;
+- cursor pagination and opaque continuation-token handling;
+- multi-region Wasabi bucket discovery/client reuse;
+- Phase 6 Continuous Integration / Continuous Delivery (CI/CD);
+- Task 7A API error boundary and `MaxKeys` validation.
 
-Later backend tasks, requiring separate approval and branches:
+The active implementation task is **Task 7B - Structured backend request/error logging** on branch `feat/structured-request-logging`.
 
-- 7B: structured request/error logging, `feat/structured-request-logging`.
-- 7C: evaluate minimal operational visibility, `ops/backend-runtime-alerts`.
-
-Frontend tasks 7D/7E belong to the frontend repository and are not backend work.
+Implement only Task 7B when explicitly instructed. Stop for review afterward. Do not start Task 7C or frontend Tasks 7D/7E.
 
 ## Established architecture
 
 - Node.js 24, Express 4, CommonJS JavaScript.
 - Amazon Web Services (AWS) Lambda runs the application; API Gateway REST API forwards requests to Express.
-- Serverless Framework v4 and CloudFormation manage deployment. `serverless.yml` enforces `frameworkVersion: "~4.42.0"`; preserve the existing manifest and lockfile rather than changing their ranges in 7A.
+- `serverless-http` adapts the Express application to Lambda.
+- Serverless Framework v4 and CloudFormation manage deployment; preserve `frameworkVersion: "~4.42.0"`.
 - AWS Software Development Kit (SDK) for JavaScript v3 accesses Wasabi's Simple Storage Service (S3)-compatible private storage.
-- Separate `test` and `prd` deployment stages.
+- Separate `test` and `prd` stages.
+- Existing CloudWatch Logs are the initial observability destination.
 
-Preserve this dependency direction:
+Preserve dependency direction:
 
 `HTTP / Express route -> application/service -> storage/infrastructure -> AWS SDK -> Wasabi`
 
-Hypertext Transfer Protocol (HTTP) response mapping belongs at the API boundary, not in the storage implementation. Services and storage must not import Express or HTTP route modules.
+Logging is a cross-cutting API/runtime concern. Do not make the service or storage layers depend on Express or HTTP logging infrastructure.
 
 Current source map:
 
-- `src/app.js`: parsers, Cross-Origin Resource Sharing (CORS), health route, protected bucket mount, Lambda adapter export.
-- `src/api/buckets.js`: bucket routes.
-- `src/service/buckets.js`: service orchestration and adding object `AccessUrl` values.
-- `src/storage/wasabi.js`: SDK calls, region discovery/cache, regional clients and signing.
+- `src/app.js`: parsers, Cross-Origin Resource Sharing (CORS), health route, protected bucket mount, final error handler and Lambda adapter export.
+- `src/api/buckets.js`: bucket HTTP routes.
+- `src/api/errorHandler.js`: Task 7A final HTTP error mapping and current minimal `5xx` diagnostics.
+- `src/errors.js`: small application-owned error model.
+- `src/service/buckets.js`: service orchestration and object `AccessUrl` generation.
+- `src/storage/wasabi.js`: SDK calls, region discovery/cache, regional clients, provider error translation and signing.
 - `src/authentication/`: Entra token validation and trusted-user authorization.
-- `test/`: existing Node.js test runner tests.
+- `src/config/index.js`: centralized application configuration.
+- `serverless.yml`: Lambda/runtime configuration.
+- `.github/workflows/backend-test-deploy.yml`: automatic `test` deployment after merge to `master`.
+- `.github/workflows/backend-prd-deploy.yml`: manual exact-SHA production promotion.
+- `test/`: Node.js built-in test runner tests.
 - `bruno/wasabi-drive-api/`: read-only integration requests.
 
 ## Security invariants
@@ -59,128 +70,206 @@ Preserve:
 - authentication before authorization and bucket-query validation;
 - `401` with `{ "error": "Unauthorized" }` for missing/invalid authentication;
 - `403` with `{ "error": "Forbidden" }` for missing required scope or unauthorized authenticated users;
-- unexpected verifier failures continuing to the server-error boundary, not being mislabeled as invalid credentials.
+- unexpected verifier failures remaining `500`, not being relabeled as invalid credentials.
 
-The backend is the security authority. CORS is a browser access policy, not authentication. API Gateway API keys are not user authentication. Do not restore MongoDB/password/bcrypt/UUID authentication, frontend-only authorization, or an authentication bypass.
+The backend is the security authority. CORS is a browser access policy, not authentication. API Gateway API keys are not user authentication. Do not restore legacy MongoDB/password/bcrypt/UUID authentication, frontend-only authorization, or an authentication bypass.
 
 Wasabi credentials stay server-side. Objects stay private. `AccessUrl` is generated server-side; never introduce public/raw object URLs or browser signing. Preserve the current 3600-second signing duration.
 
-`GET /health` remains shallow, unauthenticated and exactly `200` with `{ "status": "ok" }`. It must not call Wasabi or Entra, or expose configuration or release details in 7A.
+`GET /health` remains shallow, unauthenticated and exactly `200` with `{ "status": "ok" }`. Do not add dependency probes or release information to the health response.
 
-## Storage and pagination invariants
+## Task 7A behavior is now an invariant
 
-The configured Wasabi endpoint/region is the bootstrap client for account-level listing and bucket-region discovery, not a claim that all buckets use that region.
-
-Preserve the implemented multi-region behavior:
-
-- `GetBucketLocation` discovery;
-- recognition of the existing validated `307 TemporaryRedirect` response before error translation;
-- bucket-specific Wasabi hostname validation and canonical HTTPS regional endpoints;
-- region/client caches and eviction of a failed region-discovery promise;
-- existing empty-location, `EU`, and US East 1 alias handling;
-- use of the correct regional client for listing and presigning.
-
-Never follow an arbitrary provider-supplied endpoint, broaden redirect acceptance, add a new retry loop or change caching policy in 7A.
-
-Preserve `ListObjectsV2`, `Delimiter: "/"`, prefixes, opaque continuation tokens, all successful response fields, and per-object `AccessUrl`. An opaque token is provider-owned data: do not decode, interpret, reconstruct or validate it as a filename. Do not restore `TotalKeyCount` or full-list traversal. A warm browse normally uses one listing page plus local signing; initial region discovery may add a request.
-
-## Task 7A design constraints
-
-Use a small application-owned error model: at most `InputValidationError` and `StorageProviderError`, with no hierarchy/framework. Place shared errors outside HTTP route modules. Retain an original provider error as an internal `cause`, never as public response data.
-
-Use one final Express error-handling middleware after routes. Express 4 asynchronous handlers must explicitly forward caught errors with `next(error)`. Delegate with `next(error)` when `res.headersSent` is true; do not send twice or swallow startup failures.
-
-The selected public contract is JSON (JavaScript Object Notation) with one `error` string:
+Preserve the production-validated Task 7A error model:
 
 | Condition | Status | Body |
 | --- | --- | --- |
 | Invalid `MaxKeys` | 400 | `{ "error": "MaxKeys must be an integer between 1 and 1000." }` |
 | Missing/invalid authentication | 401 | `{ "error": "Unauthorized" }` |
 | Authenticated but unauthorized / missing required scope | 403 | `{ "error": "Forbidden" }` |
-| Unexpected application/configuration/local signing error | 500 | `{ "error": "Internal Server Error" }` |
+| Unexpected application/configuration/local-signing error | 500 | `{ "error": "Internal Server Error" }` |
 | Recognized Wasabi service/transport failure | 502 | `{ "error": "Bad Gateway" }` |
 
-Use `502`, not a blanket `503`: this task represents failure at the storage boundary, without asserting a maintenance window, transient overload or known retry interval. Do not invent `Retry-After`, automatic retries, or a provider-to-client status translation catalog.
+Do not expose raw provider errors, messages, stacks, causes, SDK metadata or arbitrary status fields. Keep the explicit parser compatibility behavior for safe `400`, `413` and `415` responses and malformed encoded routes. Preserve `res.headersSent` delegation.
 
-Recognize remote SDK/service and known transport failures narrowly at SDK call boundaries. Do not wrap every exception in the storage module as a provider failure. Local programming, credential-configuration and local signing defects must still be `500`. Handle valid region redirects before wrapping failures. Provider `401`/`403` must never become Entra authentication/authorization responses.
+`MaxKeys` remains optional. Supplied input is one ASCII-decimal string resolving to a safe integer from 1 through 1000; invalid input is rejected after authentication/authorization and before service/storage invocation. Do not add a validation framework.
 
-Never derive a public status/message from arbitrary `error.status`, `error.statusCode`, `error.message`, `$metadata`, `$response` or `cause`. Only application-owned errors and the task's narrow existing-parser error allowlist may select a public client response. Preserve existing parser/routing client-error semantics rather than turning malformed input or body-limit errors into `500`. The focused task prompt defines that allowlist.
+Recognized Wasabi service/transport failures are wrapped only at SDK request boundaries. Valid `307 TemporaryRedirect` region discovery is handled before terminal failure wrapping. Provider `401`/`403` never become Entra responses. Local signing/programming/configuration failures remain `500`.
 
-Do not change existing authentication modules just to make their already-stable `401`/`403` responses pass through the new handler. Successful responses and existing not-found routing behavior remain unchanged.
+## Storage and pagination invariants
 
-### MaxKeys
+The configured Wasabi endpoint/region is the bootstrap client for account-level listing and bucket-region discovery, not a claim that all buckets use that region.
 
-Validate at the bucket HTTP boundary, after existing authentication/authorization and before the service/storage call:
+Preserve:
 
-- omitted means omitted; do not introduce a new default;
-- supplied input must be one string containing only ASCII decimal digits;
-- convert once to a safe integer in the inclusive range 1 through 1000;
-- leading zeroes are allowed; whitespace, signs, decimals, exponent/hex notation, junk suffixes, empty values, arrays, objects and repeated parameters are rejected;
-- pass the resulting number to service/storage; remove permissive `parseInt` coercion there;
-- do not clamp, silently replace invalid input, change query-parser configuration or add a validation library.
+- `GetBucketLocation` discovery;
+- validated `307 TemporaryRedirect` handling;
+- bucket-specific Wasabi hostname validation and canonical HTTPS regional endpoints;
+- region/client caches and eviction of failed discovery promises;
+- existing empty-location, `EU`, and US East 1 alias handling;
+- correct regional client use for listing and presigning;
+- `ListObjectsV2`, `Delimiter: "/"`, prefixes and opaque continuation tokens;
+- all successful response fields and per-object `AccessUrl`;
+- no `TotalKeyCount` or full-list traversal.
 
-### Minimal diagnostics in 7A
+Never follow arbitrary provider endpoints, broaden redirect acceptance, add a new retry loop, decode/reconstruct continuation tokens or change caching policy in 7B.
 
-The error boundary may emit one minimal server-side record per `5xx`, using ordinary `console` and an allowlist of fixed category, selected HTTP status, fixed SDK operation and numeric provider status. Do not add request lifecycle logging, correlation IDs, release injection, telemetry dependencies or cloud configuration in 7A.
+## Task 7B design
 
-Never log or return raw request/response/error objects, headers, bodies, bearer tokens, credentials, private keys, continuation tokens, object keys, full query strings or complete presigned URLs. Do not dump an unsanitized stack/message/cause: those can contain sensitive data. Keep raw causes internal and emit only deliberately selected safe fields. Avoid duplicate logging in route/service/storage catches.
+Task 7B adds a deliberately small structured logging boundary using ordinary `console` output and existing CloudWatch Logs. Do not add a logging library unless the owner explicitly changes this decision.
 
-## Later observability tasks: reference only
+### Request identifier
 
-When separately approved, 7B should use structured JSON and existing Amazon CloudWatch Logs, AWS's existing log destination for this Lambda. Prefer ordinary application logging unless a library has a concrete benefit.
+Use the existing AWS Lambda invocation identifier as the request correlation identifier. `serverless-http` supports a request customization hook receiving the Express request, Lambda event and Lambda context. Attach only the safe Lambda request ID (`context.awsRequestId`) needed by logging; do not attach or expose the full Lambda event/context to application code.
 
-Evaluate an existing API Gateway/Lambda request identifier before inventing a correlation ID. A correlation ID ties events to one request. Evaluate stage, route template, operation, status, duration and deployed Git commit SHA (Secure Hash Algorithm-based commit identifier). A release identifier ties runtime errors to the exact deployed source and workflow.
+Do not generate a second UUID in Lambda. For local Express execution where no Lambda context exists, the request ID may be absent; local operation must continue normally.
 
-For production, the deployed source SHA may differ from the workflow-dispatch SHA. Use the verified checked-out commit, not an assumption about `github.sha`. No workflow or runtime-configuration edits are authorized by this reference section.
+### Request lifecycle logging
 
-7C should assess useful Lambda/API failure signals and cost before adding alarms. Practical documented CloudWatch checks may be enough for a personal project. No external observability platform, broad dashboard suite or distributed-tracing infrastructure is pre-approved.
+Add one global request-lifecycle logging middleware early enough to observe parser, authentication, authorization, route and error responses. Emit **one structured completion record per completed HTTP response**. Avoid duplicate route/service/storage logging.
 
-## Completed CI/CD: preserve
+Use fixed/allowlisted fields only. The intended schema is:
 
-Do not modify `.github/workflows/*`, deployment scripts, `serverless.yml`, GitHub Environments or cloud permissions unless the owner explicitly authorizes a concrete change for the selected task.
+- `level`: `info`, `warn`, or `error`;
+- `requestId`: Lambda invocation request ID when available;
+- `method`: HTTP method;
+- `route`: safe route template/group, never the raw URL;
+- `operation`: fixed application operation when known;
+- `status`: final HTTP status;
+- `durationMs`: non-negative request duration in milliseconds;
+- `stage`: configured deployment stage when available;
+- `releaseSha`: validated deployed Git SHA when available;
+- `errorCategory`: only for failures (`client`, `authentication`, `authorization`, `application`, or `storage`);
+- `storageOperation`: fixed SDK/storage operation only for `StorageProviderError` when applicable;
+- `providerStatus`: valid numeric provider HTTP status only when already safely available.
 
-Preserve pinned actions, Node.js 24 and clean `npm ci`:
+Use `console.log` for successful/non-error completions, `console.warn` for `4xx`, and `console.error` for `5xx`. The serialized message itself must be JSON.
 
-- pull requests (PRs) to protected `master`: tests only, no deployment capability;
-- merge to `master`: automatic backend `test` deployment and deployed smoke checks;
-- production: manual full 40-character source-SHA promotion from `master` history, detached checkout, SHA verification, re-testing, protected `prd` Environment and serialized deployment;
-- rollback: manually promote a known-good historical `master` SHA, preferably one including the current health/smoke capability.
+Do not log raw `req.path`, `req.originalUrl`, query strings or parameter values. Use fixed route templates/groups such as `/health`, `/buckets`, `/buckets/:name/region`, and `/buckets/:Bucket/objects/:Prefix(*)`. For authentication/authorization failures before the bucket router resolves a specific route, `/buckets` is sufficient.
+
+Use fixed application operation names. Do not put bucket names, prefixes, object keys or continuation tokens into `operation` or route metadata.
+
+### Error integration
+
+Task 7A currently emits a minimal `5xx` record in the final error handler. Task 7B should fold that safe information into the single request-completion log rather than produce duplicate records.
+
+The final error handler may store only sanitized classification metadata for the lifecycle logger before returning the existing public response. Preserve all Task 7A response mappings exactly.
+
+For storage failures, keep the fixed storage operation and valid numeric provider status if present. Never copy raw error objects, `cause`, SDK responses, stacks or messages into logging context.
+
+### Release/stage attribution
+
+Inject runtime deployment metadata without creating a new release system.
+
+- `DEPLOYMENT_STAGE` comes from the Serverless stage (`test` or `prd`) in `serverless.yml`.
+- `RELEASE_SHA` comes from the **actual checked-out Git commit** in the deployment workflow.
+- Add these Lambda environment values through the existing Serverless configuration.
+- Centralize runtime reads in `src/config/index.js` rather than reading arbitrary environment variables throughout logging code.
+- Treat `releaseSha` as present only when it is a full 40-character hexadecimal Git commit SHA. Local execution without it must still work.
+
+For both deployment workflows, derive `RELEASE_SHA` from `git rev-parse HEAD` after checkout/verification and export it for subsequent deployment steps. Do not rely on production `github.sha`, because a manually promoted historical `master` commit can differ from the workflow-dispatch commit.
+
+Workflow edits are authorized **only** for this narrow release-SHA propagation. Preserve every existing checkout validation, pinned action, permission, OIDC role, Environment, concurrency rule, test gate, deploy command and smoke check.
+
+### Never log
+
+Never log or serialize:
+
+- bearer/access tokens or `Authorization` headers;
+- raw headers or request/response bodies;
+- Microsoft Entra claims, tenant/user Object IDs or allowlists;
+- Wasabi access keys/secrets or AWS credentials;
+- private keys or environment-secret dumps;
+- bucket names, prefixes, object keys or continuation tokens;
+- complete presigned `AccessUrl` values or their query parameters;
+- raw AWS SDK/Wasabi error objects;
+- raw error messages, stacks, causes, `$response`, or unfiltered `$metadata`;
+- full request URLs or query strings.
+
+## CI/CD: preserve, except approved 7B metadata propagation
+
+Pull requests to protected `master` run tests only and have no deployment capability. Merge to `master` automatically deploys `test`. Production remains a manual exact-full-SHA promotion from `master` history with detached checkout, SHA verification, re-testing, the protected `prd` Environment and serialized deployment. Rollback remains promotion of a known-good historical `master` SHA.
 
 GitHub OIDC exchanges workflow identity for short-lived AWS Security Token Service (STS) credentials through dedicated test/production Identity and Access Management (IAM) roles. Preserve that separation. Do not introduce permanent AWS deployment keys, broaden IAM or automatically deploy production on merge.
 
-## Tests, integration safety and change management
+Do not modify the PR workflow. Do not change deployment identities, permissions, action versions, Serverless version, smoke-test scope or integration target safety.
 
-Use one focused branch per task; never commit to `master`, use a Phase 7 mega-branch, force-push, discard user changes, or create a temporary integration branch without approval.
+## Tests and change management
 
-Before implementation inspect branch/status and record the starting commit. Start from current `master` using fast-forward-only synchronization when safe. Do not silently move a dirty worktree. Do not commit, push, create/merge a PR or deploy unless explicitly requested.
+Use branch `feat/structured-request-logging`; never commit directly to `master`, use a Phase 7 mega-branch, force-push, discard user changes, or deploy unless explicitly requested.
 
-For 7A run on Node.js 24:
+Before implementation inspect branch/status and record the starting commit. Start from current `master` using fast-forward-only synchronization when safe. Do not silently move a dirty worktree.
+
+Run on Node.js 24:
 
 ```text
 npm ci
 npm test
-# Implement only the approved task, then:
+# Implement only Task 7B, then:
 npm test
 git diff --check
 git status --short
 ```
 
-Use the existing `node:test` and `node:assert/strict` patterns, local HTTP test servers and SDK/dependency stubs. No test framework/dependency is needed. Test actual route wiring as well as helpers. Restore mocks, module caches and environment changes; close local servers.
+Use existing `node:test` and `node:assert/strict` patterns, local HTTP servers and stubs. No new test framework is needed.
 
-Preserve all security, pagination, signing, regional-routing and integration-target tests. Assertions about raw error identity may be updated to assert the approved wrapper and original `cause`; do not remove their retry/cache/redirect safety assertions. Numeric internal `MaxKeys` fixtures may change with the deliberate boundary normalization.
+Add focused tests proving at least:
 
-Bruno full regression (`npm run test:integration`) remains read-only, manual and restricted to `local`, `development` or `test`; never `prd`. The `test` target requires a short-lived delegated Entra access token. Use it only when a safe target/configuration and the owner's permission are available. Do not print/store tokens or weaken target validation. Otherwise report that integration was not run and why.
+- one structured completion record is emitted for a successful request;
+- Lambda `context.awsRequestId` reaches the structured record through the `serverless-http` request hook;
+- `durationMs` and final HTTP status are present;
+- configured stage and valid release SHA are emitted when present;
+- local/missing runtime metadata does not break requests;
+- `401`, `403`, client `4xx`, unexpected `500`, and storage `502` keep their existing response contracts and receive the correct safe category;
+- storage `502` retains safe storage operation/provider status metadata without raw provider details;
+- only fixed route templates/groups and fixed operations are logged;
+- bearer tokens, authorization headers, query values, continuation tokens, bucket/object/prefix values, presigned URLs, credentials, raw errors/messages/stacks/causes and Entra identifiers do not appear in captured logs;
+- the existing `/health` response remains unchanged;
+- existing multi-region, pagination, signing, authentication, authorization and Task 7A tests continue to pass.
 
-`deployment-smoke` remains only `/health` 200 and unauthenticated `/buckets/` 401, with no token or Wasabi operation. Its existing scope/target checks and approved production use are unchanged. Do not add authenticated requests to that tag.
+Bruno full regression (`npm run test:integration`) remains read-only, manual and restricted to `local`, `development` or `test`; never `prd`. Use it only when a safe configured target and permission are available. Otherwise report that it was not run and why.
 
-Expected 7A areas: `src/app.js`, `src/api/buckets.js`, narrowly scoped error/validation helpers, SDK failure translation in `src/storage/wasabi.js`, focused tests, and concise README/Bruno documentation. Service orchestration should normally remain unchanged. No package/lockfile changes are expected.
+`deployment-smoke` remains only `/health` 200 and unauthenticated `/buckets/` 401 and retains approved production use. Do not add authenticated/provider requests to that smoke scope.
 
-Prefer proposed commits such as `refactor(api): centralize error handling`, `fix(api): validate MaxKeys`, and `test(api): cover provider and validation failures`. Do not actually commit without instruction.
+## Expected Task 7B areas
 
-## Explicit non-goals and completion
+Expected changes are limited to areas such as:
 
-No Entra/MSAL redesign, CORS changes, Lambda authorizers, API Gateway migration, Express 5, TypeScript, ECMAScript modules (ESM), new database, dependency upgrades, audit auto-fixes, deployment redesign, frontend changes, thumbnails, queue/event infrastructure, viewer features or Phase 8 work.
+- a small `src/observability/` request-logging helper/middleware;
+- `src/app.js` for early logging middleware, fixed route-group metadata and the `serverless-http` request hook;
+- `src/api/buckets.js` only for fixed safe route/operation metadata if needed;
+- `src/api/errorHandler.js` to feed sanitized error context to the single completion log instead of independently logging;
+- `src/config/index.js` for centralized stage/release metadata;
+- `serverless.yml` for runtime `DEPLOYMENT_STAGE` and `RELEASE_SHA` injection;
+- `.github/workflows/backend-test-deploy.yml` and `.github/workflows/backend-prd-deploy.yml` only to export the actual checked-out SHA for deployment;
+- focused tests and concise README documentation.
 
-For 7A also exclude full structured request logging, correlation/release configuration, alarms and changes to workflows or cloud resources.
+No package or lockfile changes are expected.
 
-Stop after the selected task. Report branch/base SHA, exact files changed, error mapping, validation rules, preservation of multi-region behavior, security/non-leakage tests, exact commands/results/counts, integration omissions, diff/status checks, unchanged protected areas, proposed commits and remaining issues. Do not claim tests/deployments that did not run. Do not continue to 7B automatically.
+## Explicit non-goals
+
+Do not implement Task 7C alarms/dashboards, AWS X-Ray, OpenTelemetry, distributed tracing, an external observability SaaS, a logging framework, log shipping, retention-policy changes or CloudWatch infrastructure changes.
+
+Do not redesign Entra/MSAL, CORS, API Gateway, Lambda authorizers, Serverless architecture, multi-region storage, pagination, signing, error response contracts, frontend code, dependency versions, Express 5, TypeScript, ECMAScript modules, Create React App, thumbnails, SNS/SQS, databases, viewer features or Phase 8 work.
+
+Do not add user identity to logs.
+
+## Completion report
+
+Stop after Task 7B. Report:
+
+- branch and starting/base SHA;
+- exact files changed;
+- final structured log schema and level/category rules;
+- how Lambda request ID is propagated;
+- how `DEPLOYMENT_STAGE` and exact checked-out `RELEASE_SHA` reach Lambda;
+- confirmation that production historical-SHA promotion still works;
+- tests added and exact commands/results/counts;
+- evidence that secrets/private values/raw errors are absent from logs;
+- integration tests run or omitted and why;
+- `git diff --check` and `git status --short` results;
+- confirmation that package files, dependencies, security architecture, successful API contracts, deployment permissions/identities and frontend are unchanged;
+- proposed focused commit messages;
+- any remaining issues.
+
+Do not commit, push, create/merge a PR, deploy, or continue to Task 7C unless separately instructed.

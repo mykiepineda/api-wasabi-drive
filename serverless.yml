@@ -20,6 +20,8 @@ functions:
           method: ANY
           cors: true
     environment:
+      DEPLOYMENT_STAGE: ${self:provider.stage}
+      RELEASE_SHA: ${env:RELEASE_SHA}
       WASABI_SERVICE_URL: ${env:WASABI_SERVICE_URL}
       WASABI_REGION: ${env:WASABI_REGION}
       WASABI_ACCESS_KEY_ID: ${env:WASABI_ACCESS_KEY_ID}

@@ -275,7 +275,7 @@ test("unexpected errors and verifier failures are fixed 500 responses without le
   const records = captured.map((record) => JSON.parse(record));
   assert.deepEqual(records.map(({ status, errorCategory, route, operation }) => ({ status, errorCategory, route, operation })), [
     { status: 500, errorCategory: "application", route: "/buckets", operation: "listBuckets" },
-    { status: 500, errorCategory: "application", route: "/buckets", operation: "listBuckets" },
+    { status: 500, errorCategory: "application", route: "/buckets", operation: "request" },
   ]);
   assert.equal(captured.join(" ").includes(secret), false);
 });

@@ -72,6 +72,11 @@ const installStubs = ({
           return next();
         }
 
+        if (authorization === "test-trusted-user" && authStatus === 200) {
+          req.auth = { oid: trustedUserObjectId, tid: "tenant-id" };
+          return next();
+        }
+
         if (authorization && authStatus === 200) {
           req.auth = { oid: "not-trusted-object-id", tid: "tenant-id" };
           return next();
@@ -312,6 +317,38 @@ test("auth failures and storage failures keep the correct safe categories and me
   assert.equal(storageRecord.errorCategory, "storage");
   assert.equal(storageRecord.storageOperation, "ListBuckets");
   assert.equal(storageRecord.providerStatus, 403);
+});
+
+test("unmatched bucket requests do not claim a bucket operation", async () => {
+  const objectListPath = "/buckets/private-bucket/objects/private-prefix";
+
+  for (const [authStatus, expectedCategory] of [
+    [401, "authentication"],
+    [403, "authorization"],
+  ]) {
+    const app = loadApp({ authStatus });
+    const { records } = await captureLogs(async () => {
+      const response = await request(app, objectListPath);
+      assert.equal(response.statusCode, authStatus);
+    });
+
+    const payload = parseRecords(records).at(-1);
+    assert.equal(payload.route, "/buckets");
+    assert.equal(payload.operation, "request");
+    assert.equal(payload.errorCategory, expectedCategory);
+  }
+
+  const app = loadApp({ authStatus: 200, allowTrustedUser: true });
+  const { records } = await captureLogs(async () => {
+    const response = await request(app, "/buckets/private-bucket/not-a-route", {
+      Authorization: "test-trusted-user",
+    });
+    assert.equal(response.statusCode, 404);
+  });
+
+  const payload = parseRecords(records).at(-1);
+  assert.equal(payload.route, "/buckets");
+  assert.equal(payload.operation, "request");
 });
 
 test("missing metadata does not break requests and the log omits raw values", async () => {

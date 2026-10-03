@@ -1,11 +1,11 @@
 const config = require("../config");
 
-const routeTemplateMap = [
+const routeOperationMap = new Map([
   ["/health", "health"],
-  ["/buckets", "listBuckets"],
-  ["/buckets/:name/region", "getBucketRegion"],
-  ["/buckets/:Bucket/objects/:Prefix(*)", "listObjects"],
-];
+  ["/", "listBuckets"],
+  ["/:name/region", "getBucketRegion"],
+  ["/:Bucket/objects/:Prefix(*)", "listObjects"],
+]);
 
 const getRequestRoute = (req) => {
   const routePath = req?.route?.path ? String(req.route.path) : "";
@@ -49,9 +49,21 @@ const getRequestRoute = (req) => {
 };
 
 const getRequestOperation = (req) => {
-  const route = getRequestRoute(req);
-  const matched = routeTemplateMap.find(([path]) => path === route);
-  return matched ? matched[1] : "request";
+  const routePath = req?.route?.path;
+
+  if (typeof routePath !== "string") {
+    return "request";
+  }
+
+  if (
+    routePath === "/" &&
+    req.baseUrl !== "/buckets" &&
+    !req.originalUrl?.startsWith("/buckets")
+  ) {
+    return "request";
+  }
+
+  return routeOperationMap.get(routePath) || "request";
 };
 
 const getErrorCategory = (status, metadata = {}) => {

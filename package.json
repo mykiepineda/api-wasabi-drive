@@ -10,6 +10,7 @@
     "test": "node --test",
     "test:integration": "node scripts/run-integration.js",
     "inventory:images": "node scripts/inventory-images.js",
+    "locate:images": "node scripts/locate-images.js",
     "thumbnail:prototype": "node scripts/prototype-thumbnail.js",
     "start": "nodemon src/server.js",
     "deploy:test": "serverless deploy --stage test",

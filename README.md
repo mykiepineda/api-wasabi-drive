@@ -55,3 +55,19 @@ npm run thumbnail:prototype -- ".\private-samples\representative.jpg" ".\private
 ```
 
 Do not commit inventory output or personal sample images. For review, return aggregate object/byte totals, extension counts/bytes, candidate-image counts/bytes and source-size p50/p90/max, plus missing ETags. For representative prototypes, record source/output dimensions and bytes, reduction percentage, visual quality, orientation and small-image behavior, transparency where relevant, and HEIC/HEIF success or failure category without private filenames.
+
+The read-only locator is for explicit, local evidence gathering. It lists object metadata only; it does not download or modify objects. Its JSON output intentionally contains private bucket names and full object keys, so do not commit output. The diagnostic extension set is not the production thumbnail eligibility policy.
+
+Locate NEF files:
+
+```powershell
+npm run locate:images -- --bucket <bucket-1> --bucket <bucket-2> --extension nef --limit 20
+```
+
+Use `--extension cr2` in the same command to locate CR2 RAW objects.
+
+Locate the largest photo/image objects:
+
+```powershell
+npm run locate:images -- --bucket <bucket-1> --bucket <bucket-2> --largest 10
+```

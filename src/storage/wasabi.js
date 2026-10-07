@@ -260,6 +260,27 @@ const getListObjects = async (params) => {
   );
 };
 
+const getObjectMetadataPage = async (params) => {
+  const { Bucket, Prefix, MaxKeys, ContinuationToken } = params;
+  const pageParams = { Bucket };
+  if (Prefix !== undefined) {
+    pageParams.Prefix = Prefix;
+  }
+  if (MaxKeys !== undefined) {
+    pageParams.MaxKeys = MaxKeys;
+  }
+  if (ContinuationToken !== undefined) {
+    pageParams.ContinuationToken = ContinuationToken;
+  }
+
+  const client = await getBucketClient(Bucket);
+  return sendProviderRequest(
+    client,
+    new ListObjectsV2Command(pageParams),
+    "ListObjectsV2",
+  );
+};
+
 const getObjectAccessUrl = async ({ Bucket, Key }) => {
   const client = await getBucketClient(Bucket);
   return getSignedUrl(client, new GetObjectCommand({ Bucket, Key }), {
@@ -271,5 +292,6 @@ module.exports = {
   getListBuckets,
   getBucketRegion,
   getListObjects,
+  getObjectMetadataPage,
   getObjectAccessUrl,
 };

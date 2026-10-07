@@ -35,3 +35,23 @@ GitHub OIDC and AWS STS provide short-lived AWS deployment credentials. No perma
 To roll back, identify a known-good commit on `master` and rerun **Backend Production Promotion** with that exact full SHA. The workflow performs the same validation and tests before redeploying that source to production.
 
 Rollback to a commit predating the health/deployment-smoke capability may successfully redeploy the older application but fail the current workflow's post-deployment smoke step because that source does not expose `/health` or support the `deployment-smoke` scope. In that case, verify the rollback manually. After this capability has been production-validated, prefer a known-good SHA that includes it.
+
+## Phase 8A1 image evidence tools
+
+These local tools gather evidence only. The inventory requests object-list metadata from explicitly named Wasabi buckets and does not download or modify source objects. Its broad candidate-image extensions are for measurement, not an approved thumbnail eligibility policy. The thumbnail prototype reads a local image and writes a separate WebP output.
+
+Run the inventory from the repository root with the normal complete local backend `.env` configuration. The script loads `.env` before importing storage and configuration modules; the existing Entra trusted-user configuration remains required.
+
+```powershell
+npm run inventory:images -- --bucket "<source-bucket>"
+npm run inventory:images -- --bucket "<source-bucket>" --bucket "<another-source-bucket>" --prefix "<optional/prefix/>"
+```
+
+The default output contains aggregate counts and byte totals only, without bucket names or object keys. For local representative images, Sharp writes WebP at a maximum 512-pixel edge and quality 80 by default. The output may be an existing/new directory or a `.webp` file path.
+
+```powershell
+npm run thumbnail:prototype -- ".\private-samples\representative.jpg" ".\private-samples\output"
+npm run thumbnail:prototype -- ".\private-samples\representative.jpg" ".\private-samples\preview.webp" --max-edge 384 --quality 75
+```
+
+Do not commit inventory output or personal sample images. For review, return aggregate object/byte totals, extension counts/bytes, candidate-image counts/bytes and source-size p50/p90/max, plus missing ETags. For representative prototypes, record source/output dimensions and bytes, reduction percentage, visual quality, orientation and small-image behavior, transparency where relevant, and HEIC/HEIF success or failure category without private filenames.

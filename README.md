@@ -36,7 +36,7 @@ To roll back, identify a known-good commit on `master` and rerun **Backend Produ
 
 Rollback to a commit predating the health/deployment-smoke capability may successfully redeploy the older application but fail the current workflow's post-deployment smoke step because that source does not expose `/health` or support the `deployment-smoke` scope. In that case, verify the rollback manually. After this capability has been production-validated, prefer a known-good SHA that includes it.
 
-## Phase 8A1 image evidence tools
+## Phase 8 Task 8C-A1 - Thumbnail evidence tools
 
 These local tools gather evidence only. The inventory requests object-list metadata from explicitly named Wasabi buckets and does not download or modify source objects. Its broad candidate-image extensions are for measurement, not an approved thumbnail eligibility policy. The thumbnail prototype reads a local image and writes a separate WebP output.
 

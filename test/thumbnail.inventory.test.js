@@ -88,6 +88,20 @@ test("paginates through empty pages and passes bucket, prefix, and continuation 
   assert.equal(summary.candidateImages.p50Bytes, 42);
 });
 
+test("rejects truncated pages without a non-empty continuation token", async (t) => {
+  for (const token of [undefined, "", "   "]) {
+    await t.test(`rejects token ${JSON.stringify(token)}`, async () => {
+      await assert.rejects(
+        collectInventory({
+          buckets: ["source-a"],
+          listPage: async () => ({ IsTruncated: true, NextContinuationToken: token }),
+        }),
+        { message: "Storage pagination is truncated without a continuation token." },
+      );
+    });
+  }
+});
+
 test("continues to the next bucket after an empty bucket page", async () => {
   const calls = [];
   const summary = await collectInventory({

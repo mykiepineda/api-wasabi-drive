@@ -136,7 +136,11 @@ const collectInventory = async ({ buckets, prefix, listPage }) => {
 
       const page = await listPage(params);
       addInventoryPage(accumulator, Array.isArray(page?.Contents) ? page.Contents : []);
-      const nextToken = page?.IsTruncated ? page.NextContinuationToken : undefined;
+      const isTruncated = page?.IsTruncated === true;
+      const nextToken = isTruncated ? page.NextContinuationToken : undefined;
+      if (isTruncated && (typeof nextToken !== "string" || !nextToken.trim())) {
+        throw new Error("Storage pagination is truncated without a continuation token.");
+      }
       if (!nextToken) {
         break;
       }

@@ -53,9 +53,8 @@ const main = async (args) => {
       listPage: storage.getObjectMetadataPage,
     });
     console.log(JSON.stringify(summary, null, 2));
-  } catch(error) {
+  } catch {
     console.error("Inventory failed. Verify local configuration, bucket access, and network connectivity.");
-    console.error(error.message);
     process.exitCode = 1;
   }
 };

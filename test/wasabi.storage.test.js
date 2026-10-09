@@ -174,6 +174,33 @@ test("getListObjects maps request parameters for S3", async () => {
   assert.equal(listRequest.client.options.endpoint, "https://example.test");
 });
 
+test("getObjectMetadataPage maps pagination parameters without a delimiter", async () => {
+  const providerPage = {
+    Contents: [{ Key: "reports/nested/photo.jpg", Size: 123 }],
+    IsTruncated: true,
+    NextContinuationToken: "next-token",
+  };
+  responses.push(providerPage);
+
+  const result = await wasabi.getObjectMetadataPage({
+    Bucket: "recursive-inventory-documents",
+    Prefix: "reports/",
+    MaxKeys: 17,
+    ContinuationToken: "current-token",
+  });
+
+  const listRequest = requests.find(({ command }) => command instanceof ListObjectsV2Command);
+  assert.equal(result, providerPage);
+  assert.deepEqual(listRequest.command.input, {
+    Bucket: "recursive-inventory-documents",
+    Prefix: "reports/",
+    MaxKeys: 17,
+    ContinuationToken: "current-token",
+  });
+  assert.equal(Object.hasOwn(listRequest.command.input, "Delimiter"), false);
+  assert.equal(listRequest.client.options.region, "us-east-2");
+});
+
 test("getBucketRegion returns the region descriptions", async () => {
   assert.deepEqual(await wasabi.getBucketRegion("documents"), {
     region: "us-east-2",

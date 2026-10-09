@@ -71,3 +71,68 @@ Locate the largest photo/image objects:
 ```powershell
 npm run locate:images -- --bucket <bucket-1> --bucket <bucket-2> --largest 10
 ```
+
+## Phase 8 Task 8C-A1 — Recorded findings (October 2026)
+
+The following findings summarize local, read-only inventory across **nine** existing source buckets and representative **local** thumbnail experiments. Figures are aggregate or anonymized: no private bucket names, full object keys, personal filenames, credentials, or photo samples are included. These are measurements and prototype results, **not** confirmation that production thumbnail generation is implemented.
+
+### Source-library inventory
+
+| Measurement | Result |
+| --- | ---: |
+| Source buckets inventoried | 9 |
+| All objects | 80,181 |
+| All object bytes | 937,392,086,523 (937.39 GB) |
+| Zero-byte objects / folder markers | 136 / 115 |
+| Candidate-image objects (measurement-only classifier) | 54,791 |
+| Candidate-image bytes | 179,367,379,135 (179.37 GB) |
+| Candidate-image source size: p50 / p90 | 3,088,217 / 6,063,451 bytes |
+| Largest candidate-image source | 71,672,607 bytes |
+| Objects missing an ETag in listing metadata | 0 |
+
+The candidate-image classifier measures common browser-facing image extensions, **not every photographic RAW object** and **not the final production thumbnail allowlist**. Candidates account for approximately 68.3% of object count and 19.1% of total stored bytes. Their source bytes are a planning-scale estimate for a future initial backfill, not a measured transfer bill or a guarantee that every candidate can be decoded.
+
+| Notable source extension | Objects | Bytes | Candidate-image classifier? |
+| --- | ---: | ---: | --- |
+| `.jpg` | 54,247 | 179,096,170,187 | Yes |
+| `.jpeg` | 157 | 3,988,964 | Yes |
+| `.png` | 305 | 215,845,437 | Yes |
+| `.webp` | 54 | 1,017,738 | Yes |
+| `.heic` | 25 | 49,646,136 | Yes, decoder unverified |
+| `.gif` | 3 | 710,673 | Yes, policy not decided |
+| `.jfif` | 3 | 4,070,556 | No; Sharp locally recognized sampled JFIF as JPEG |
+| `.cr2` | 35 | 546,995,926 | No; Canon RAW preview is an additional requirement |
+| `.nef` | 22,727 | 245,708,289,897 | No; Nikon RAW support deferred |
+
+Together `.jpg` and `.jpeg` represent about **99.3% of the measured candidate-image count** and **99.85% of candidate-image bytes**. That supports prioritizing conventional photographs while keeping RAW preview support separately pluggable. No `HeadObject` per image or metadata database was needed for the inventory.
+
+### Sharp prototype observations
+
+The initial local baseline was **WebP, maximum 512-pixel edge, quality 80**, preserving aspect ratio, applying orientation metadata, and avoiding enlargement. These settings are a successful *prototype baseline*, not a permanent production constant. Output visual quality was judged good for the tested examples.
+
+| Representative local test | Source bytes | Resulting WebP dimensions | WebP bytes | Byte reduction |
+| --- | ---: | --- | ---: | ---: |
+| JPEG photograph | 1,869,482 | 288 × 512 (auto-oriented) | 23,238 | 98.76% |
+| JFIF/JPEG square image | 2,150,320 | 512 × 512 | 45,532 | 97.88% |
+| JFIF/JPEG landscape image | 3,474,697 | 512 × 340 | 7,918 | 99.77% |
+| Very large PNG poster (10,394 × 23,622 source pixels) | 71,672,607 | 225 × 512 | 21,338 | 99.97% |
+
+The large PNG result demonstrates useful reduction on the largest *candidate-image object* reported by the inventory; it is not a test of the largest RAW file. No claim is made yet about production Lambda memory/duration, real HEIC decoding, or transparency on representative PNGs. Unit tests separately verify transform bounds, orientation, and no-enlargement behavior.
+
+### Canon CR2 embedded-preview experiment
+
+The installed local Sharp build could **not** decode a sampled `.cr2` source directly. A separate manual experiment with ExifTool 13.59 identified two embedded images: `PreviewImage` (**2,746,504 bytes**, **5,472 × 3,648** pixels) and `ThumbnailImage` (17,201 bytes). The smaller `ThumbnailImage` looked poor; the full-sized `PreviewImage` looked good.
+
+Extracting `PreviewImage` to a separate JPEG and processing it with the existing Sharp prototype produced a **512 × 341 WebP, 40,506 bytes**, a **98.53%** reduction relative to the **embedded JPEG preview**. This percentage must not be interpreted as the reduction relative to the entire CR2 source. No source object was modified.
+
+This proves feasibility for the sampled CR2, **not** that a Node.js / Linux Lambda-compatible preview extractor has been selected or packaged. Production CR2 support remains a requirement for the later thumbnail pipeline: show its derived WebP in the grid when available, retain the original `AccessUrl` for opening/downloading the CR2, and fall back to the generic file icon if no usable preview exists. Do not render the CR2 original in an HTML `<img>`.
+
+### Scope decisions and remaining checks
+
+- **NEF:** Deferred because the Nikon camera is configured to upload separate JPEG versions of those photographs. NEF decoding/extraction is not needed for the current browsing objective.
+- **CR2:** In scope for eventual derived thumbnails because equivalent separate JPEGs are not available for these files. Prefer the larger embedded `PreviewImage` when usable; investigate a suitable runtime extraction method before committing to an ExifTool/RAW dependency.
+- **HEIC/HEIF:** Present in inventory but not tested against the target worker build. Do not assume support or let it block normal photo thumbnails.
+- **JFIF:** Locally decodable as JPEG; final format/eligibility policy is still to be established in A2.
+- **Safety:** Originals stay authoritative and private. A1 contains only read-only storage metadata tooling and local-file prototypes—no thumbnail bucket writes, SNS/Lambda worker, backfill, API `ThumbnailAccessUrl`, or frontend thumbnail rendering.
+
+**Next gate:** Merge/review A1 as an evidence-only change. Task 8C-A2 will define the deterministic versioned key, centralized eligibility policy, reusable service boundary, and a production-compatible CR2-preview strategy in a separate focused change. Backfill, event automation, and frontend/API integration remain later tasks and require separate approval.

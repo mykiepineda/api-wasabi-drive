@@ -168,13 +168,23 @@ test("thumbnail policy rejects unsupported, zero-byte, malformed metadata, and m
   });
   const cr2Pending = evaluateThumbnailEligibility({
     size: 1024,
-    extension: "cr2",
+    extension: ".CR2",
     sourceKey: "raw/photo.cr2",
     region: "us-east-1",
     bucket: "source-bucket",
     etag: '"abc"',
-    allowCR2Preview: true,
   });
+  const cr2InvalidMetadata = [
+    { size: 0, extension: "cr2", sourceKey: "raw/photo.cr2", region: "us-east-1", bucket: "source-bucket", etag: '"abc"' },
+    { size: 12.5, extension: "cr2", sourceKey: "raw/photo.cr2", region: "us-east-1", bucket: "source-bucket", etag: '"abc"' },
+    { size: Number.MAX_SAFE_INTEGER + 1, extension: "cr2", sourceKey: "raw/photo.cr2", region: "us-east-1", bucket: "source-bucket", etag: '"abc"' },
+    { size: 1024, extension: "cr2", sourceKey: "raw/photo.cr2", region: "us-east-1", bucket: "source-bucket", etag: '"abc' },
+    { size: 1024, extension: "cr2", sourceKey: "raw/photo.cr2", region: "us-east-1", bucket: "source-bucket" },
+    { size: 1024, extension: "cr2", sourceKey: "raw/photo.cr2", region: "us-east-1", etag: '"abc"' },
+    { size: 1024, extension: "cr2", region: "us-east-1", bucket: "source-bucket", etag: '"abc"' },
+    { size: 1024, extension: "cr2", sourceKey: "raw/photo.cr2", bucket: "source-bucket", etag: '"abc"' },
+    { size: 1024, extension: "cr2", sourceKey: "raw/", region: "us-east-1", bucket: "source-bucket", etag: '"abc"' },
+  ].map((metadata) => evaluateThumbnailEligibility(metadata));
 
   assert.equal(unsupported.eligible, false);
   assert.equal(zeroByte.eligible, false);
@@ -183,36 +193,60 @@ test("thumbnail policy rejects unsupported, zero-byte, malformed metadata, and m
   assert.equal(invalidSize.eligible, false);
   assert.equal(fractionalSize.eligible, false);
   assert.equal(badEtag.eligible, false);
-  assert.equal(cr2Pending.eligible, false);
-  assert.equal(cr2Pending.reason, "cr2-preview-pending-approval");
+  assert.equal(cr2Pending.eligible, true);
+  assert.equal(cr2Pending.category, "cr2-preview");
+  assert.equal(cr2Pending.reason, "cr2-preview-supported");
+  assert.ok(cr2InvalidMetadata.every((result) => result.eligible === false));
   assert.equal(unsupported.reason, "unsupported-format");
   assert.equal(zeroByte.reason, "zero-byte-object");
   assert.equal(deferred.reason, "nef-deferred");
   assert.equal(folderMarker.reason, "folder-marker-key");
 });
 
-test("standard images pass policy and generate deterministic WebP output", async () => {
-  const buffer = await makePngBuffer({ width: 1200, height: 600 });
-  const result = await applyThumbnailPolicy({
-    region: "us-east-1",
-    bucket: "source-bucket",
-    sourceKey: "photos/family.png",
-    etag: '"abc-123"',
-    sourceBytes: buffer,
-    extension: "png",
-    format: "png",
-    size: buffer.length,
-    allowCR2Preview: false,
-  });
+test("standard image formats retain the existing service path and recipe", async () => {
+  const png = await makePngBuffer({ width: 1200, height: 600 });
+  const jpeg = await sharp(png).jpeg().toBuffer();
+  const webp = await sharp(png).webp().toBuffer();
+  const sources = [
+    ["jpg", jpeg],
+    ["jpeg", jpeg],
+    ["jfif", jpeg],
+    ["png", png],
+    ["webp", webp],
+  ];
+  const originalExtractor = require("../src/thumbnail/cr2").extractCR2EmbeddedPreview;
+  let extractorCalls = 0;
+  require("../src/thumbnail/cr2").extractCR2EmbeddedPreview = async () => {
+    extractorCalls += 1;
+    throw new Error("standard image must not use the CR2 extractor");
+  };
 
-  assert.equal(result.eligible, true);
-  assert.match(result.derivedKey, /^v1\/[a-f0-9]{2}\/[a-f0-9]{64}\.webp$/);
-  assert.equal(result.contentType, "image/webp");
-  assert.ok(result.bytes > 0);
-  assert.ok(result.dimensions.width <= FIXED_THUMBNAIL_MAX_EDGE);
-  assert.ok(result.dimensions.height <= FIXED_THUMBNAIL_MAX_EDGE);
-  assert.equal(result.reason, "thumbnail-generated");
-  assert.equal((await sharp(result.webpBuffer).metadata()).orientation, undefined);
+  try {
+    for (const [extension, sourceBytes] of sources) {
+      const result = await applyThumbnailPolicy({
+        region: "us-east-1",
+        bucket: "source-bucket",
+        sourceKey: `photos/family.${extension}`,
+        etag: '"abc-123"',
+        sourceBytes,
+        extension,
+        size: sourceBytes.length,
+      });
+
+      assert.equal(result.eligible, true, extension);
+      assert.match(result.derivedKey, /^v1\/[a-f0-9]{2}\/[a-f0-9]{64}\.webp$/);
+      assert.equal(result.contentType, "image/webp");
+      assert.ok(result.bytes > 0);
+      assert.ok(result.dimensions.width <= FIXED_THUMBNAIL_MAX_EDGE);
+      assert.ok(result.dimensions.height <= FIXED_THUMBNAIL_MAX_EDGE);
+      assert.equal(result.reason, "thumbnail-generated");
+      assert.equal((await sharp(result.webpBuffer).metadata()).orientation, undefined);
+    }
+  } finally {
+    require("../src/thumbnail/cr2").extractCR2EmbeddedPreview = originalExtractor;
+  }
+
+  assert.equal(extractorCalls, 0);
   assert.equal(FIXED_THUMBNAIL_MAX_EDGE, 512);
   assert.equal(FIXED_THUMBNAIL_QUALITY, 80);
 });
@@ -257,22 +291,133 @@ test("corrupt supported image bytes fail safely without mutating input", async (
   assert.equal(input.toString(), "not an image");
 });
 
-test("CR2 remains non-eligible through the main service until real-sample approval", async () => {
+test("CR2 service extracts the embedded JPEG before transforming and keys the original object", async () => {
+  const sourceBytes = Buffer.from("synthetic CR2 source bytes");
+  const originalSource = Buffer.from(sourceBytes);
+  const previewBuffer = await sharp({
+    create: { width: 90, height: 60, channels: 3, background: { r: 30, g: 80, b: 120 } },
+  }).jpeg().toBuffer();
+  const cr2Module = require("../src/thumbnail/cr2");
+  const originalExtractor = cr2Module.extractCR2EmbeddedPreview;
+  let receivedInput;
+  cr2Module.extractCR2EmbeddedPreview = async ({ input }) => {
+    receivedInput = input;
+    return { eligible: true, buffer: previewBuffer, fallbackOrientation: 8 };
+  };
+
+  try {
+    const result = await applyThumbnailPolicy({
+      region: "us-east-1",
+      bucket: "source-bucket",
+      sourceKey: "raw/test.CR2",
+      etag: '"cr2-etag"',
+      sourceBytes,
+      extension: ".CR2",
+      size: sourceBytes.length,
+    });
+
+    assert.equal(receivedInput, sourceBytes);
+    assert.equal(sourceBytes.equals(originalSource), true);
+    assert.equal(result.eligible, true);
+    assert.equal(result.reason, "thumbnail-generated");
+    assert.equal(result.derivedKey, createThumbnailKey({
+      region: "us-east-1",
+      bucket: "source-bucket",
+      sourceKey: "raw/test.CR2",
+      etag: '"cr2-etag"',
+    }));
+    assert.deepEqual(result.dimensions, { width: 60, height: 90 });
+    assert.equal(result.contentType, "image/webp");
+    assert.equal(result.format, "webp");
+    assert.ok(result.bytes > 0);
+    assert.equal(result.bytes, result.webpBuffer.length);
+    assert.equal((await sharp(result.webpBuffer).metadata()).format, "webp");
+  } finally {
+    cr2Module.extractCR2EmbeddedPreview = originalExtractor;
+  }
+});
+
+test("CR2 service honors orientation owned by the embedded preview", async () => {
+  const previewBuffer = await sharp({
+    create: { width: 90, height: 60, channels: 3, background: { r: 30, g: 80, b: 120 } },
+  }).withMetadata({ orientation: 6 }).jpeg().toBuffer();
+  const cr2Module = require("../src/thumbnail/cr2");
+  const originalExtractor = cr2Module.extractCR2EmbeddedPreview;
+  cr2Module.extractCR2EmbeddedPreview = async () => ({ eligible: true, buffer: previewBuffer });
+
+  try {
+    const result = await applyThumbnailPolicy({
+      region: "us-east-1",
+      bucket: "source-bucket",
+      sourceKey: "raw/oriented.CR2",
+      etag: '"oriented"',
+      sourceBytes: Buffer.from("synthetic CR2 source bytes"),
+      extension: "cr2",
+      size: 26,
+    });
+
+    assert.equal(result.eligible, true);
+    assert.deepEqual(result.dimensions, { width: 60, height: 90 });
+    assert.equal((await sharp(result.webpBuffer).metadata()).orientation, undefined);
+  } finally {
+    cr2Module.extractCR2EmbeddedPreview = originalExtractor;
+  }
+});
+
+test("CR2 extractor declines and unusable previews produce no thumbnail output", async () => {
+  const cr2Module = require("../src/thumbnail/cr2");
+  const originalExtractor = cr2Module.extractCR2EmbeddedPreview;
+  const failures = [
+    { eligible: false, reason: "portable-cr2-preview-empty", buffer: null },
+    { eligible: false, reason: "portable-cr2-preview-low-quality", buffer: null },
+    { eligible: false, reason: "cr2-orientation-unsupported", buffer: null },
+    { eligible: true, buffer: null },
+  ];
+
+  try {
+    for (const extraction of failures) {
+      cr2Module.extractCR2EmbeddedPreview = async () => extraction;
+      const result = await applyThumbnailPolicy({
+        region: "us-east-1",
+        bucket: "source-bucket",
+        sourceKey: "raw/test.CR2",
+        etag: '"cr2-etag"',
+        sourceBytes: Buffer.from("synthetic CR2"),
+        extension: "cr2",
+        size: 13,
+      });
+
+      assert.equal(result.eligible, false);
+      assert.equal(result.reason, "cr2-preview-unavailable");
+      assert.equal(result.derivedKey, null);
+      assert.equal(result.dimensions, null);
+      assert.equal(result.contentType, null);
+      assert.equal(result.bytes, null);
+      assert.equal(result.webpBuffer, undefined);
+    }
+  } finally {
+    cr2Module.extractCR2EmbeddedPreview = originalExtractor;
+  }
+});
+
+test("corrupt CR2 bytes fail safely through the main service", async () => {
+  const sourceBytes = Buffer.from("not a valid CR2");
+  const original = Buffer.from(sourceBytes);
   const result = await applyThumbnailPolicy({
     region: "us-east-1",
     bucket: "source-bucket",
-    sourceKey: "raw/test.CR2",
-    etag: '"cr2-etag"',
-    sourceBytes: Buffer.from("fake cr2 bytes"),
+    sourceKey: "raw/corrupt.CR2",
+    etag: '"corrupt"',
+    sourceBytes,
     extension: "cr2",
-    format: "cr2",
-    size: 16,
-    allowCR2Preview: true,
+    size: sourceBytes.length,
   });
 
   assert.equal(result.eligible, false);
-  assert.equal(result.reason, "cr2-preview-pending-approval");
+  assert.equal(result.reason, "cr2-preview-unavailable");
   assert.equal(result.derivedKey, null);
+  assert.equal(result.webpBuffer, undefined);
+  assert.equal(sourceBytes.equals(original), true);
 });
 
 test("CR2 preview extraction fails safely when no extractor is available", async () => {

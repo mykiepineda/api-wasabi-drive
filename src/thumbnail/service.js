@@ -1,5 +1,6 @@
 const { createThumbnailKey, normalizeEtag } = require("./key");
-const { evaluateThumbnailEligibility, normalizeExtension } = require("./eligibility");
+const { evaluateThumbnailEligibility } = require("./eligibility");
+const cr2 = require("./cr2");
 const { transformToWebp } = require("./transform");
 
 const FIXED_THUMBNAIL_MAX_EDGE = 512;
@@ -14,7 +15,6 @@ const applyThumbnailPolicy = async ({
   extension,
   format,
   size,
-  allowCR2Preview = false,
   maxEdge,
   quality,
 }) => {
@@ -41,27 +41,6 @@ const applyThumbnailPolicy = async ({
   }
 
   const normalizedEtag = normalizeEtag(etag);
-  if (typeof extension === "string" && normalizeExtension(extension) === "cr2") {
-    return {
-      eligible: false,
-      reason: "cr2-preview-pending-approval",
-      derivedKey: null,
-      dimensions: null,
-      contentType: null,
-      bytes: null,
-    };
-  }
-  if (typeof format === "string" && normalizeExtension(format) === "cr2") {
-    return {
-      eligible: false,
-      reason: "cr2-preview-pending-approval",
-      derivedKey: null,
-      dimensions: null,
-      contentType: null,
-      bytes: null,
-    };
-  }
-
   const eligibility = evaluateThumbnailEligibility({
     size,
     extension,
@@ -70,7 +49,6 @@ const applyThumbnailPolicy = async ({
     region,
     bucket,
     etag: normalizedEtag || etag,
-    allowCR2Preview,
   });
 
   if (!eligibility.eligible) {
@@ -85,17 +63,36 @@ const applyThumbnailPolicy = async ({
   }
 
   try {
+    let transformInput = sourceBytes;
+    let fallbackOrientation;
+
+    if (eligibility.category === "cr2-preview") {
+      const preview = await cr2.extractCR2EmbeddedPreview({ input: sourceBytes });
+      if (!preview?.eligible || !Buffer.isBuffer(preview.buffer) || preview.buffer.length === 0) {
+        return {
+          eligible: false,
+          reason: "cr2-preview-unavailable",
+          derivedKey: null,
+          dimensions: null,
+          contentType: null,
+          bytes: null,
+        };
+      }
+      transformInput = preview.buffer;
+      fallbackOrientation = preview.fallbackOrientation;
+    }
+
+    const transformed = await transformToWebp({
+      input: transformInput,
+      maxEdge: FIXED_THUMBNAIL_MAX_EDGE,
+      quality: FIXED_THUMBNAIL_QUALITY,
+      ...(fallbackOrientation === undefined ? {} : { fallbackOrientation }),
+    });
     const derivedKey = createThumbnailKey({
       region,
       bucket,
       sourceKey,
       etag: normalizedEtag || etag,
-    });
-
-    const transformed = await transformToWebp({
-      input: sourceBytes,
-      maxEdge: FIXED_THUMBNAIL_MAX_EDGE,
-      quality: FIXED_THUMBNAIL_QUALITY,
     });
 
     return {

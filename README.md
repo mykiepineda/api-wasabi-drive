@@ -136,3 +136,32 @@ This proves feasibility for the sampled CR2, **not** that a Node.js / Linux Lamb
 - **Safety:** Originals stay authoritative and private. A1 contains only read-only storage metadata tooling and local-file prototypes—no thumbnail bucket writes, SNS/Lambda worker, backfill, API `ThumbnailAccessUrl`, or frontend thumbnail rendering.
 
 **Next gate:** Merge/review A1 as an evidence-only change. Task 8C-A2 will define the deterministic versioned key, centralized eligibility policy, reusable service boundary, and a production-compatible CR2-preview strategy in a separate focused change. Backfill, event automation, and frontend/API integration remain later tasks and require separate approval.
+
+## Phase 8 Task 8C-A2 — Durable Thumbnail Foundation
+
+This repository includes a minimal backend thumbnail foundation that is intentionally isolated from the Express API and storage adapters. The implementation is a local-only utility layer that defines a deterministic v1 thumbnail identity, performs policy checks before any transformation, and produces a WebP result without writing to Wasabi or modifying source objects.
+
+### Deterministic v1 key contract
+
+`SHA-256(JSON.stringify(["v1", sourceRegion, sourceBucket, completeSourceKey, normalizedETag]))` is used as the derived identity. The ETag is normalized only by trimming whitespace and removing one pair of enclosing double quotes. The resulting key is then stored as `v1/<first-two-hash-characters>/<full-hex-hash>.webp`.
+
+The repository rejects blank region, bucket, source key, or ETag values and does not produce a derived path for unsupported or zero-byte inputs. The key remains separate from the source bucket/key metadata and never stores private values in cleartext.
+
+### Eligibility policy
+
+The production allowlist is intentionally distinct from the A1 evidence classifier. Supported standard formats are `jpg`, `jpeg`, `jfif`, `png`, and `webp`. The `nef` path remains deferred and `cr2` remains gated behind a separate opt-in preview-extraction path. Unsupported formats and folder markers are treated as nonfatal results rather than failures. This keeps the original object flow unchanged while making thumbnail generation deterministic and safe.
+
+### Transform recipe
+
+The `transformToWebp` utility follows the validated prototype settings: maximum 512-pixel edge, quality 80, `fit: "inside"`, `withoutEnlargement: true`, `rotate()` to honor EXIF orientation, and automatic WebP output without retaining unnecessary metadata. The transform accepts in-memory bytes and returns `image/webp` output with width, height, bytes, and safe metadata for later application logic.
+
+### CR2 gate
+
+The repo includes an optional `extractCR2EmbeddedPreview` experiment that tries to load a portable CR2 preview extractor at runtime. It is a local-only, opt-in path and intentionally does not claim production CR2 support when the extractor is unavailable, empty, or invalid. That preserves the standard-format thumbnail foundation while documenting the blocker for future worker or Lambda packaging work.
+
+### Local design contract
+
+- Do not import backend config or storage credentials in the thumbnail utility layer.
+- Keep Sharp and any CR2 preview extractor in development-only tooling for this A2 stage.
+- Return structured nonfatal results for unsupported inputs instead of throwing for ordinary cases.
+- Preserve current API contracts and original `AccessUrl` semantics; this change does not add a `ThumbnailAccessUrl` or storage-write path.

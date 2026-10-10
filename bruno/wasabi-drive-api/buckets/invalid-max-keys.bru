@@ -8,17 +8,17 @@ meta {
 }
 
 get {
-  url: {{baseUrl}}/buckets/{{bucketName}}/objects{{objectPrefix}}
+  url: {{baseUrl}}/buckets/{{bucketName}}/objects{{objectPrefix}}?MaxKeys=0
   body: none
   auth: none
 }
 
-headers {
-  Authorization: Bearer {{accessToken}}
+params:query {
+  MaxKeys: 0
 }
 
-query {
-  MaxKeys: 0
+headers {
+  Authorization: Bearer {{accessToken}}
 }
 
 tests {

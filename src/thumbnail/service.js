@@ -1,5 +1,5 @@
 const { createThumbnailKey, normalizeEtag } = require("./key");
-const { evaluateThumbnailEligibility } = require("./eligibility");
+const { evaluateThumbnailEligibility, normalizeExtension } = require("./eligibility");
 const { transformToWebp } = require("./transform");
 
 const FIXED_THUMBNAIL_MAX_EDGE = 512;
@@ -41,6 +41,27 @@ const applyThumbnailPolicy = async ({
   }
 
   const normalizedEtag = normalizeEtag(etag);
+  if (typeof extension === "string" && normalizeExtension(extension) === "cr2") {
+    return {
+      eligible: false,
+      reason: "cr2-preview-pending-approval",
+      derivedKey: null,
+      dimensions: null,
+      contentType: null,
+      bytes: null,
+    };
+  }
+  if (typeof format === "string" && normalizeExtension(format) === "cr2") {
+    return {
+      eligible: false,
+      reason: "cr2-preview-pending-approval",
+      derivedKey: null,
+      dimensions: null,
+      contentType: null,
+      bytes: null,
+    };
+  }
+
   const eligibility = evaluateThumbnailEligibility({
     size,
     extension,

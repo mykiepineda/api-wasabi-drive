@@ -1,15 +1,20 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const { extractThumbnail } = require("extract-raw-preview");
+const { extractCR2EmbeddedPreview } = require("../src/thumbnail/cr2");
 const { transformToWebp } = require("../src/thumbnail/transform");
 
 const parseArguments = (args) => {
-  if (args.length !== 1) {
-    throw new Error("Usage: node scripts/thumbnail-cr2-probe.js <local-cr2-file>");
+  if (args.length < 1 || args.length > 2) {
+    throw new Error("Usage: node scripts/thumbnail-cr2-probe.js <local-cr2-file> [--webp <output-path>]");
   }
 
   const inputPath = path.resolve(args[0]);
-  return { inputPath };
+  const outputFlagIndex = args.indexOf("--webp");
+  const outputPath = outputFlagIndex !== -1 && args[outputFlagIndex + 1]
+    ? path.resolve(args[outputFlagIndex + 1])
+    : null;
+
+  return { inputPath, outputPath };
 };
 
 const sanitizeResult = (result) => ({
@@ -32,26 +37,33 @@ const main = async (args) => {
   try {
     const options = parseArguments(args);
     const bytes = await fs.readFile(options.inputPath);
-    const extracted = await extractThumbnail(bytes, { maxBytes: 8 * 1024 * 1024 });
+    const preview = await extractCR2EmbeddedPreview({ input: bytes });
 
-    if (!extracted || extracted.found === false) {
-      console.log(JSON.stringify({ eligible: false, reason: extracted?.reason ?? "no-embedded-preview-found", mimeType: null, width: null, height: null, byteLength: null, webp: null }, null, 2));
+    if (!preview.eligible || !preview.buffer) {
+      console.log(JSON.stringify({
+        eligible: false,
+        reason: preview.reason ?? "no-embedded-preview-found",
+        mimeType: null,
+        width: null,
+        height: null,
+        byteLength: null,
+        webp: null,
+      }, null, 2));
       return;
     }
 
-    if (extracted.byteLength < 32 * 1024) {
-      console.log(JSON.stringify({ eligible: false, reason: "low-quality-preview", mimeType: extracted.mimeType ?? null, width: extracted.width ?? null, height: extracted.height ?? null, byteLength: extracted.byteLength ?? null, webp: null }, null, 2));
-      return;
+    const webp = await transformToWebp({ input: preview.buffer, maxEdge: 512, quality: 80 });
+    if (options.outputPath) {
+      await fs.writeFile(options.outputPath, webp.buffer);
     }
 
-    const webp = await transformToWebp({ input: Buffer.from(extracted.data), maxEdge: 512, quality: 80 });
     console.log(JSON.stringify(sanitizeResult({
       eligible: true,
-      reason: "embedded-preview-ready",
-      mimeType: extracted.mimeType ?? null,
-      width: extracted.width ?? null,
-      height: extracted.height ?? null,
-      byteLength: extracted.byteLength ?? null,
+      reason: preview.reason ?? "embedded-preview-ready",
+      mimeType: preview.format ?? null,
+      width: preview.width ?? null,
+      height: preview.height ?? null,
+      byteLength: preview.byteLength ?? null,
       webp: {
         width: webp.width,
         height: webp.height,

@@ -35,11 +35,25 @@ const normalizeEtag = (etag) => {
     return "";
   }
 
-  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
-    return trimmed.slice(1, -1);
+  const quoteCount = [...trimmed].filter((char) => char === '"').length;
+  if (quoteCount === 0) {
+    return trimmed;
   }
 
-  return trimmed;
+  if (quoteCount !== 2 || !trimmed.startsWith('"') || !trimmed.endsWith('"')) {
+    return "";
+  }
+
+  const unwrapped = trimmed.slice(1, -1);
+  if (!unwrapped.trim()) {
+    return "";
+  }
+
+  if (unwrapped.includes('"')) {
+    return "";
+  }
+
+  return unwrapped;
 };
 
 const createThumbnailKey = (input = {}) => {

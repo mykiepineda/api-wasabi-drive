@@ -40,7 +40,7 @@ const makePngBuffer = async ({ width = 1200, height = 600, orientation, alpha = 
   return pipeline.png().toBuffer();
 };
 
-test("v1 thumbnail keys are deterministic and collision separated", () => {
+test("v1 thumbnail keys are deterministic and separated by identity inputs", () => {
   const one = createThumbnailKey({
     region: "us-east-1",
     bucket: "source-bucket",
@@ -53,10 +53,35 @@ test("v1 thumbnail keys are deterministic and collision separated", () => {
     sourceKey: "nested/photo.jpg",
     etag: '"etag-123"',
   });
-  const different = createThumbnailKey({
+  const otherRegion = createThumbnailKey({
+    region: "us-west-2",
+    bucket: "source-bucket",
+    sourceKey: "nested/photo.jpg",
+    etag: '"etag-123"',
+  });
+  const otherBucket = createThumbnailKey({
+    region: "us-east-1",
+    bucket: "source-bucket-2",
+    sourceKey: "nested/photo.jpg",
+    etag: '"etag-123"',
+  });
+  const otherKey = createThumbnailKey({
     region: "us-east-1",
     bucket: "source-bucket",
     sourceKey: "nested/photo-other.jpg",
+    etag: '"etag-123"',
+  });
+  const otherEtag = createThumbnailKey({
+    region: "us-east-1",
+    bucket: "source-bucket",
+    sourceKey: "nested/photo.jpg",
+    etag: '"etag-456"',
+  });
+  const otherVersion = createThumbnailKey({
+    formatVersion: "v2",
+    region: "us-east-1",
+    bucket: "source-bucket",
+    sourceKey: "nested/photo.jpg",
     etag: '"etag-123"',
   });
   const unsafeVersion = () => createThumbnailKey({
@@ -68,8 +93,15 @@ test("v1 thumbnail keys are deterministic and collision separated", () => {
   });
 
   assert.equal(normalizeEtag(' "etag-123" '), "etag-123");
+  assert.equal(normalizeEtag('"   "'), "");
+  assert.equal(normalizeEtag('"etag-123'), "");
+  assert.equal(normalizeEtag('etag-123"'), "");
   assert.equal(one, same);
-  assert.notEqual(one, different);
+  assert.notEqual(one, otherRegion);
+  assert.notEqual(one, otherBucket);
+  assert.notEqual(one, otherKey);
+  assert.notEqual(one, otherEtag);
+  assert.notEqual(one, otherVersion);
   assert.match(one, /^v1\/[a-f0-9]{2}\/[a-f0-9]{64}\.webp$/);
   assert.throws(unsafeVersion, /safe version/);
   assert.equal(sanitizeVersion("v2"), "v2");
@@ -77,7 +109,7 @@ test("v1 thumbnail keys are deterministic and collision separated", () => {
   assert.equal(sanitizeVersion(" v2 "), "");
 });
 
-test("thumbnail policy rejects unsupported and zero-byte inputs without throwing", () => {
+test("thumbnail policy rejects unsupported, zero-byte, malformed metadata, and malformed ETags without throwing", () => {
   const unsupported = evaluateThumbnailEligibility({
     size: 128,
     extension: ".GIF",
@@ -118,12 +150,41 @@ test("thumbnail policy rejects unsupported and zero-byte inputs without throwing
     bucket: "source-bucket",
     etag: '"abc"',
   });
+  const fractionalSize = evaluateThumbnailEligibility({
+    size: 128.5,
+    extension: "jpg",
+    sourceKey: "folder/pic.jpg",
+    region: "us-east-1",
+    bucket: "source-bucket",
+    etag: '"abc"',
+  });
+  const badEtag = evaluateThumbnailEligibility({
+    size: 128,
+    extension: "jpg",
+    sourceKey: "folder/pic.jpg",
+    region: "us-east-1",
+    bucket: "source-bucket",
+    etag: '"abc',
+  });
+  const cr2Pending = evaluateThumbnailEligibility({
+    size: 1024,
+    extension: "cr2",
+    sourceKey: "raw/photo.cr2",
+    region: "us-east-1",
+    bucket: "source-bucket",
+    etag: '"abc"',
+    allowCR2Preview: true,
+  });
 
   assert.equal(unsupported.eligible, false);
   assert.equal(zeroByte.eligible, false);
   assert.equal(deferred.eligible, false);
   assert.equal(folderMarker.eligible, false);
   assert.equal(invalidSize.eligible, false);
+  assert.equal(fractionalSize.eligible, false);
+  assert.equal(badEtag.eligible, false);
+  assert.equal(cr2Pending.eligible, false);
+  assert.equal(cr2Pending.reason, "cr2-preview-pending-approval");
   assert.equal(unsupported.reason, "unsupported-format");
   assert.equal(zeroByte.reason, "zero-byte-object");
   assert.equal(deferred.reason, "nef-deferred");
@@ -156,7 +217,7 @@ test("standard images pass policy and generate deterministic WebP output", async
   assert.equal(FIXED_THUMBNAIL_QUALITY, 80);
 });
 
-test("transform enforces the A2 resize recipe and retains transparency", async () => {
+test("transform enforces the A2 resize recipe and preserves alpha in transparent output", async () => {
   const input = await makePngBuffer({ width: 40, height: 20, orientation: 6, alpha: 0.5 });
   const transformed = await transformToWebp({ input, maxEdge: 512, quality: 80 });
   const outputMetadata = await sharp(transformed.buffer).metadata();
@@ -168,8 +229,12 @@ test("transform enforces the A2 resize recipe and retains transparency", async (
   assert.equal(transformed.height, 40);
   assert.equal(transformed.contentType, "image/webp");
   assert.ok(transformed.bytes > 0);
-  assert.ok(outputPixel.info.channels >= 3);
-  assert.ok(normalizeExtension(".JPG") === "jpg");
+  assert.equal(outputPixel.info.channels, 4);
+  const centerX = Math.floor(outputPixel.info.width / 2);
+  const centerY = Math.floor(outputPixel.info.height / 2);
+  const alphaIndex = ((centerY * outputPixel.info.width) + centerX) * 4 + 3;
+  assert.ok(outputPixel.data[alphaIndex] > 0 && outputPixel.data[alphaIndex] < 255, "alpha channel should be preserved for semitransparent pixels");
+  assert.equal(normalizeExtension(".JPG"), "jpg");
 });
 
 test("corrupt supported image bytes fail safely without mutating input", async () => {
@@ -190,6 +255,24 @@ test("corrupt supported image bytes fail safely without mutating input", async (
   assert.equal(result.reason, "thumbnail-generation-failed");
   assert.equal(input.equals(original), true);
   assert.equal(input.toString(), "not an image");
+});
+
+test("CR2 remains non-eligible through the main service until real-sample approval", async () => {
+  const result = await applyThumbnailPolicy({
+    region: "us-east-1",
+    bucket: "source-bucket",
+    sourceKey: "raw/test.CR2",
+    etag: '"cr2-etag"',
+    sourceBytes: Buffer.from("fake cr2 bytes"),
+    extension: "cr2",
+    format: "cr2",
+    size: 16,
+    allowCR2Preview: true,
+  });
+
+  assert.equal(result.eligible, false);
+  assert.equal(result.reason, "cr2-preview-pending-approval");
+  assert.equal(result.derivedKey, null);
 });
 
 test("CR2 preview extraction fails safely when no extractor is available", async () => {

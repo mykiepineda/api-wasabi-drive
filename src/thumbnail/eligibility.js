@@ -1,3 +1,5 @@
+const { normalizeEtag } = require("./key");
+
 const STANDARD_THUMBNAIL_EXTENSIONS = new Set(["jpg", "jpeg", "jfif", "png", "webp"]);
 const RAW_PREVIEW_EXTENSIONS = new Set(["cr2"]);
 const DEFERRED_RAW_EXTENSIONS = new Set(["nef"]);
@@ -16,6 +18,8 @@ const normalizeExtension = (value) => {
   return withoutDot.toLowerCase();
 };
 
+const isPositiveSafeInteger = (value) => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
 const evaluateThumbnailEligibility = (input = {}) => {
   const size = input.size ?? input.objectSize;
   const extension = input.extension ?? input.format ?? input.fileExtension;
@@ -26,7 +30,7 @@ const evaluateThumbnailEligibility = (input = {}) => {
   const etag = input.etag ?? input.normalizedETag ?? input.ETag;
   const allowCR2Preview = Boolean(input.allowCR2Preview ?? input.allowRawPreview ?? false);
 
-  if (!Number.isFinite(size) || size <= 0) {
+  if (!isPositiveSafeInteger(size)) {
     return { eligible: false, reason: "zero-byte-object", category: "unsupported" };
   }
 
@@ -42,7 +46,8 @@ const evaluateThumbnailEligibility = (input = {}) => {
   if (typeof bucket !== "string" || !bucket.trim()) {
     return { eligible: false, reason: "missing-source-bucket", category: "unsupported" };
   }
-  if (typeof etag !== "string" || !etag.trim()) {
+  const normalizedEtag = normalizeEtag(etag);
+  if (typeof etag !== "string" || !normalizedEtag) {
     return { eligible: false, reason: "missing-source-etag", category: "unsupported" };
   }
 
@@ -61,18 +66,9 @@ const evaluateThumbnailEligibility = (input = {}) => {
   }
 
   if (RAW_PREVIEW_EXTENSIONS.has(normalizedExtension)) {
-    if (allowCR2Preview) {
-      return {
-        eligible: true,
-        reason: "cr2-preview-enabled",
-        category: "raw-preview",
-        extension: normalizedExtension,
-      };
-    }
-
     return {
       eligible: false,
-      reason: "cr2-preview-not-enabled",
+      reason: "cr2-preview-pending-approval",
       category: "unsupported",
       extension: normalizedExtension,
     };

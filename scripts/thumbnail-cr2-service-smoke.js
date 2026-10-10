@@ -11,8 +11,11 @@ const printResult = (result) => {
   }));
 };
 
-const run = async () => {
-  const sourcePath = process.argv[2];
+const run = async ({
+  sourcePath = process.argv[2],
+  readFile = fs.readFileSync,
+  applyPolicy = applyThumbnailPolicy,
+} = {}) => {
   if (!sourcePath) {
     printResult({
       eligible: false,
@@ -27,7 +30,7 @@ const run = async () => {
 
   let sourceBytes;
   try {
-    sourceBytes = fs.readFileSync(sourcePath);
+    sourceBytes = readFile(sourcePath);
   } catch {
     printResult({
       eligible: false,
@@ -40,7 +43,7 @@ const run = async () => {
     return;
   }
 
-  const result = await applyThumbnailPolicy({
+  const result = await applyPolicy({
     region: "local-smoke-region",
     bucket: "local-smoke-bucket",
     sourceKey: "local-smoke-source.CR2",
@@ -50,15 +53,20 @@ const run = async () => {
     size: sourceBytes.length,
   });
   printResult(result);
+  process.exitCode = result.eligible ? 0 : 1;
 };
 
-run().catch(() => {
-  printResult({
-    eligible: false,
-    reason: "local-cr2-service-failed",
-    dimensions: null,
-    bytes: null,
-    contentType: null,
+if (require.main === module) {
+  run().catch(() => {
+    printResult({
+      eligible: false,
+      reason: "local-cr2-service-failed",
+      dimensions: null,
+      bytes: null,
+      contentType: null,
+    });
+    process.exitCode = 1;
   });
-  process.exitCode = 1;
-});
+}
+
+module.exports = { run };

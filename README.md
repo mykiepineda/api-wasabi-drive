@@ -149,7 +149,7 @@ The repository rejects blank region, bucket, source key, or ETag values and does
 
 ### Eligibility policy
 
-The production allowlist is intentionally distinct from the A1 evidence classifier. Supported standard formats are `jpg`, `jpeg`, `jfif`, `png`, and `webp`. The `nef` path remains deferred and `cr2` remains gated behind a separate opt-in preview-extraction path. Unsupported formats and folder markers are treated as nonfatal results rather than failures. This keeps the original object flow unchanged while making thumbnail generation deterministic and safe.
+The production allowlist is intentionally distinct from the A1 evidence classifier. Supported standard formats are `jpg`, `jpeg`, `jfif`, `png`, and `webp`. The `nef` path remains deferred, and `cr2` is non-eligible through the main service pending owner approval of real-sample extraction evidence. Unsupported formats and folder markers are treated as nonfatal results rather than failures. This keeps the original object flow unchanged while making thumbnail generation deterministic and safe.
 
 ### Transform recipe
 
@@ -157,15 +157,18 @@ The `transformToWebp` utility follows the validated prototype settings: maximum 
 
 ### Memory and CR2 gate
 
-The A2 service remains in-memory only. It accepts source bytes in a Buffer and returns the derived WebP bytes plus metadata. This is a deliberate design for local foundation work, but the future worker must evaluate memory limits and payload size before processing large or exotic source files, especially CR2 preview extraction and large RAW previews. Standard-image support is complete and verified; CR2 real-sample compatibility is not yet approved for production.
+The A2 service remains in-memory only. It accepts source bytes in a Buffer and returns the derived WebP bytes plus metadata. This is a deliberate design for local foundation work, but the future worker must evaluate memory limits and payload size before processing large or exotic source files, especially CR2 preview extraction and large RAW previews. Standard-image support is complete and verified.
+
+The local-only `extract-raw-preview@1.1.0` experiment successfully selected an embedded JPEG from the representative local Canon CR2 sample: 5472 × 3648 pixels and 2,746,504 bytes. Sharp produced a 512 × 341 WebP of 40,506 bytes, exactly matching the earlier ExifTool/Sharp reference results. Compatibility was demonstrated locally on Node.js 24. This validates that representative local sample only; it does not establish support for all CR2 files. The main `ThumbnailService` still deliberately rejects CR2. Linux Lambda packaging and production integration have not been validated.
 
 The repo includes an optional local-only CR2 probe script for user-supplied RAW files:
 
 ```sh
 npm run thumbnail:cr2:probe -- "<local-file.CR2>"
+npm run thumbnail:cr2:probe -- "<local-file.CR2>" --webp "<separate-output-file.webp>"
 ```
 
-The script prints sanitized JSON only: success/failure category, selected embedded preview MIME type, dimensions, resulting WebP dimensions, and bytes. It does not upload, modify, or print private path details. The owner must run this against the real CR2 sample and confirm the output before any CR2 support is treated as approved.
+The script prints sanitized JSON only: success/failure category, selected embedded preview MIME type, dimensions, resulting WebP dimensions, and bytes. It does not upload, modify, or print private path details. The optional output flag creates a separate WebP file and refuses to overwrite an existing file or the source.
 
 ### Local design contract
 
@@ -173,4 +176,4 @@ The script prints sanitized JSON only: success/failure category, selected embedd
 - Keep Sharp and any CR2 preview extractor in development-only tooling for this A2 stage.
 - Return structured nonfatal results for unsupported inputs instead of throwing for ordinary cases.
 - Preserve current API contracts and original `AccessUrl` semantics; this change does not add a `ThumbnailAccessUrl` or storage-write path.
-- CR2 integration remains explicitly pending until the local real-sample probe proves equivalent high-quality embedded preview extraction and the owner authorizes adoption.
+- CR2 integration remains explicitly pending despite the representative local sample result; production eligibility stays disabled until the owner authorizes adoption, and Linux packaging is separately unvalidated.

@@ -1,30 +1,34 @@
-const loadExtractorModule = async () => {
-  try {
-    const module = await import("extract-raw-preview");
-    return module.default ?? module;
-  } catch (error) {
-    return null;
-  }
-};
+const { extractThumbnail } = require("extract-raw-preview");
 
 const normalizePreviewCandidate = (value) => {
-  if (Buffer.isBuffer(value)) {
-    return { buffer: value, width: null, height: null, format: "jpeg" };
+  if (!value || typeof value !== "object") {
+    return null;
   }
 
-  if (value && typeof value === "object") {
-    const buffer = value.buffer ?? value.preview ?? value.data ?? value.jpeg ?? value.jpegBuffer;
-    if (Buffer.isBuffer(buffer)) {
-      return {
-        buffer,
-        width: value.width ?? null,
-        height: value.height ?? null,
-        format: value.format ?? "jpeg",
-      };
-    }
+  if (value.found === false) {
+    return null;
   }
 
-  return null;
+  if (!value.data || !(value.data instanceof Uint8Array)) {
+    return null;
+  }
+
+  const width = Number(value.width);
+  const height = Number(value.height);
+  const byteLength = Number(value.byteLength ?? value.data.length ?? 0);
+  const mimeType = typeof value.mimeType === "string" ? value.mimeType : "application/octet-stream";
+
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0 || !Number.isFinite(byteLength) || byteLength <= 0) {
+    return null;
+  }
+
+  return {
+    buffer: Buffer.from(value.data),
+    width,
+    height,
+    mimeType,
+    byteLength,
+  };
 };
 
 const extractCR2EmbeddedPreview = async ({ input, filePath } = {}) => {
@@ -43,40 +47,22 @@ const extractCR2EmbeddedPreview = async ({ input, filePath } = {}) => {
     };
   }
 
-  const extractorModule = await loadExtractorModule();
-  if (!extractorModule) {
-    return {
-      eligible: false,
-      reason: "portable-cr2-preview-extractor-unavailable",
-      extractor: "extract-raw-preview",
-      buffer: null,
-    };
-  }
-
-  const extractor =
-    typeof extractorModule === "function"
-      ? extractorModule
-      : extractorModule.extractRawPreview
-        ?? extractorModule.extractPreviewImage
-        ?? extractorModule.extractPreview
-        ?? extractorModule.default;
-
-  if (typeof extractor !== "function") {
-    return {
-      eligible: false,
-      reason: "portable-cr2-preview-extractor-invalid",
-      extractor: "extract-raw-preview",
-      buffer: null,
-    };
-  }
-
   try {
-    const candidate = await extractor(sourceBuffer);
-    const preview = normalizePreviewCandidate(candidate);
+    const extracted = await extractThumbnail(sourceBuffer, { maxBytes: 8 * 1024 * 1024 });
+    const preview = normalizePreviewCandidate(extracted);
     if (!preview) {
       return {
         eligible: false,
         reason: "portable-cr2-preview-empty",
+        extractor: "extract-raw-preview",
+        buffer: null,
+      };
+    }
+
+    if (preview.byteLength < 32 * 1024) {
+      return {
+        eligible: false,
+        reason: "portable-cr2-preview-low-quality",
         extractor: "extract-raw-preview",
         buffer: null,
       };
@@ -89,7 +75,8 @@ const extractCR2EmbeddedPreview = async ({ input, filePath } = {}) => {
       buffer: preview.buffer,
       width: preview.width,
       height: preview.height,
-      format: preview.format,
+      format: preview.mimeType,
+      byteLength: preview.byteLength,
     };
   } catch (error) {
     return {
@@ -103,5 +90,5 @@ const extractCR2EmbeddedPreview = async ({ input, filePath } = {}) => {
 
 module.exports = {
   extractCR2EmbeddedPreview,
-  loadExtractorModule,
+  normalizePreviewCandidate,
 };

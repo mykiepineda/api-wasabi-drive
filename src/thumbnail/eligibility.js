@@ -6,7 +6,14 @@ const normalizeExtension = (value) => {
   if (typeof value !== "string") {
     return "";
   }
-  return value.trim().toLowerCase();
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const withoutDot = trimmed.startsWith(".") ? trimmed.slice(1) : trimmed;
+  return withoutDot.toLowerCase();
 };
 
 const evaluateThumbnailEligibility = (input = {}) => {
@@ -18,12 +25,16 @@ const evaluateThumbnailEligibility = (input = {}) => {
   const bucket = input.bucket ?? input.sourceBucket;
   const etag = input.etag ?? input.normalizedETag ?? input.ETag;
   const allowCR2Preview = Boolean(input.allowCR2Preview ?? input.allowRawPreview ?? false);
-  if (typeof size === "number" && size <= 0) {
+
+  if (!Number.isFinite(size) || size <= 0) {
     return { eligible: false, reason: "zero-byte-object", category: "unsupported" };
   }
 
   if (typeof sourceKey !== "string" || !sourceKey.trim()) {
     return { eligible: false, reason: "missing-source-key", category: "unsupported" };
+  }
+  if (typeof sourceKey === "string" && sourceKey.endsWith("/")) {
+    return { eligible: false, reason: "folder-marker-key", category: "unsupported" };
   }
   if (typeof region !== "string" || !region.trim()) {
     return { eligible: false, reason: "missing-source-region", category: "unsupported" };

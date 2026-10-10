@@ -155,9 +155,17 @@ The production allowlist is intentionally distinct from the A1 evidence classifi
 
 The `transformToWebp` utility follows the validated prototype settings: maximum 512-pixel edge, quality 80, `fit: "inside"`, `withoutEnlargement: true`, `rotate()` to honor EXIF orientation, and automatic WebP output without retaining unnecessary metadata. The transform accepts in-memory bytes and returns `image/webp` output with width, height, bytes, and safe metadata for later application logic.
 
-### CR2 gate
+### Memory and CR2 gate
 
-The repo includes an optional `extractCR2EmbeddedPreview` experiment that tries to load a portable CR2 preview extractor at runtime. It is a local-only, opt-in path and intentionally does not claim production CR2 support when the extractor is unavailable, empty, or invalid. That preserves the standard-format thumbnail foundation while documenting the blocker for future worker or Lambda packaging work.
+The A2 service remains in-memory only. It accepts source bytes in a Buffer and returns the derived WebP bytes plus metadata. This is a deliberate design for local foundation work, but the future worker must evaluate memory limits and payload size before processing large or exotic source files, especially CR2 preview extraction and large RAW previews. Standard-image support is complete and verified; CR2 real-sample compatibility is not yet approved for production.
+
+The repo includes an optional local-only CR2 probe script for user-supplied RAW files:
+
+```sh
+npm run thumbnail:cr2:probe -- "<local-file.CR2>"
+```
+
+The script prints sanitized JSON only: success/failure category, selected embedded preview MIME type, dimensions, resulting WebP dimensions, and bytes. It does not upload, modify, or print private path details. The owner must run this against the real CR2 sample and confirm the output before any CR2 support is treated as approved.
 
 ### Local design contract
 
@@ -165,3 +173,4 @@ The repo includes an optional `extractCR2EmbeddedPreview` experiment that tries 
 - Keep Sharp and any CR2 preview extractor in development-only tooling for this A2 stage.
 - Return structured nonfatal results for unsupported inputs instead of throwing for ordinary cases.
 - Preserve current API contracts and original `AccessUrl` semantics; this change does not add a `ThumbnailAccessUrl` or storage-write path.
+- CR2 integration remains explicitly pending until the local real-sample probe proves equivalent high-quality embedded preview extraction and the owner authorizes adoption.

@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 
 const THUMBNAIL_FORMAT_VERSION = "v1";
+const THUMBNAIL_FORMAT_PATTERN = /^v[1-9]\d*$/;
 
 const resolveValue = (source, keys) => {
   for (const key of keys) {
@@ -9,6 +10,19 @@ const resolveValue = (source, keys) => {
     }
   }
   return undefined;
+};
+
+const sanitizeVersion = (version) => {
+  if (typeof version !== "string") {
+    return "";
+  }
+
+  const trimmed = version.trim();
+  if (!trimmed || trimmed !== version || !THUMBNAIL_FORMAT_PATTERN.test(trimmed)) {
+    return "";
+  }
+
+  return trimmed;
 };
 
 const normalizeEtag = (etag) => {
@@ -33,10 +47,10 @@ const createThumbnailKey = (input = {}) => {
   const bucket = resolveValue(input, ["sourceBucket", "bucket"]);
   const sourceKey = resolveValue(input, ["completeSourceKey", "sourceKey", "key"]);
   const etag = resolveValue(input, ["normalizedETag", "etag", "ETag"]);
-  const formatVersion = resolveValue(input, ["formatVersion"]) ?? THUMBNAIL_FORMAT_VERSION;
+  const formatVersion = sanitizeVersion(resolveValue(input, ["formatVersion"]) ?? THUMBNAIL_FORMAT_VERSION);
 
-  if (typeof formatVersion !== "string" || !formatVersion.trim()) {
-    throw new TypeError("Thumbnail format version is required.");
+  if (!formatVersion) {
+    throw new TypeError("Thumbnail format version must be a safe version like v1 or v2.");
   }
 
   if (typeof region !== "string" || !region.trim()) {
@@ -63,6 +77,8 @@ const createThumbnailKey = (input = {}) => {
 
 module.exports = {
   THUMBNAIL_FORMAT_VERSION,
+  THUMBNAIL_FORMAT_PATTERN,
   createThumbnailKey,
   normalizeEtag,
+  sanitizeVersion,
 };

@@ -2,6 +2,9 @@ const { createThumbnailKey, normalizeEtag } = require("./key");
 const { evaluateThumbnailEligibility } = require("./eligibility");
 const { transformToWebp } = require("./transform");
 
+const FIXED_THUMBNAIL_MAX_EDGE = 512;
+const FIXED_THUMBNAIL_QUALITY = 80;
+
 const applyThumbnailPolicy = async ({
   region,
   bucket,
@@ -12,13 +15,24 @@ const applyThumbnailPolicy = async ({
   format,
   size,
   allowCR2Preview = false,
-  maxEdge = 512,
-  quality = 80,
+  maxEdge,
+  quality,
 }) => {
   if (!Buffer.isBuffer(sourceBytes)) {
     return {
       eligible: false,
       reason: "missing-source-bytes",
+      derivedKey: null,
+      dimensions: null,
+      contentType: null,
+      bytes: null,
+    };
+  }
+
+  if (maxEdge !== undefined || quality !== undefined) {
+    return {
+      eligible: false,
+      reason: "unsupported-custom-recipe",
       derivedKey: null,
       dimensions: null,
       contentType: null,
@@ -59,8 +73,8 @@ const applyThumbnailPolicy = async ({
 
     const transformed = await transformToWebp({
       input: sourceBytes,
-      maxEdge,
-      quality,
+      maxEdge: FIXED_THUMBNAIL_MAX_EDGE,
+      quality: FIXED_THUMBNAIL_QUALITY,
     });
 
     return {
@@ -90,5 +104,7 @@ const applyThumbnailPolicy = async ({
 };
 
 module.exports = {
+  FIXED_THUMBNAIL_MAX_EDGE,
+  FIXED_THUMBNAIL_QUALITY,
   applyThumbnailPolicy,
 };

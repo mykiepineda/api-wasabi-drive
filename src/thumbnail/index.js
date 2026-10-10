@@ -1,14 +1,10 @@
-const { createThumbnailKey, normalizeEtag } = require("./key");
-const { evaluateThumbnailEligibility } = require("./eligibility");
-const { transformToWebp } = require("./transform");
-const { applyThumbnailPolicy } = require("./service");
-const { extractCR2EmbeddedPreview } = require("./cr2");
+const { createThumbnailKey, normalizeEtag, sanitizeVersion } = require("./key");
+const { evaluateThumbnailEligibility, normalizeExtension } = require("./eligibility");
 
 module.exports = {
   createThumbnailKey,
-  evaluateThumbnailEligibility,
-  extractCR2EmbeddedPreview,
   normalizeEtag,
-  transformToWebp,
-  applyThumbnailPolicy,
+  sanitizeVersion,
+  evaluateThumbnailEligibility,
+  normalizeExtension,
 };

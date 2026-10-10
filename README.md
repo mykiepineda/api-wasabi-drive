@@ -136,3 +136,44 @@ This proves feasibility for the sampled CR2, **not** that a Node.js / Linux Lamb
 - **Safety:** Originals stay authoritative and private. A1 contains only read-only storage metadata tooling and local-file prototypes—no thumbnail bucket writes, SNS/Lambda worker, backfill, API `ThumbnailAccessUrl`, or frontend thumbnail rendering.
 
 **Next gate:** Merge/review A1 as an evidence-only change. Task 8C-A2 will define the deterministic versioned key, centralized eligibility policy, reusable service boundary, and a production-compatible CR2-preview strategy in a separate focused change. Backfill, event automation, and frontend/API integration remain later tasks and require separate approval.
+
+## Phase 8 Task 8C-A2 — Durable Thumbnail Foundation
+
+This repository includes a minimal backend thumbnail foundation that is intentionally isolated from the Express API and storage adapters. The implementation is a local-only utility layer that defines a deterministic v1 thumbnail identity, performs policy checks before any transformation, and produces a WebP result without writing to Wasabi or modifying source objects.
+
+### Deterministic v1 key contract
+
+`SHA-256(JSON.stringify(["v1", sourceRegion, sourceBucket, completeSourceKey, normalizedETag]))` is used as the derived identity. The ETag is normalized only by trimming whitespace and removing one pair of enclosing double quotes. The resulting key is then stored as `v1/<first-two-hash-characters>/<full-hex-hash>.webp`.
+
+The repository rejects blank region, bucket, source key, or ETag values and does not produce a derived path for unsupported or zero-byte inputs. The key remains separate from the source bucket/key metadata and never stores private values in cleartext.
+
+### Eligibility policy
+
+The production allowlist is intentionally distinct from the A1 evidence classifier. Supported standard formats are `jpg`, `jpeg`, `jfif`, `png`, and `webp`. The `nef` path remains deferred, and `cr2` is non-eligible through the main service pending owner approval of real-sample extraction evidence. Unsupported formats and folder markers are treated as nonfatal results rather than failures. This keeps the original object flow unchanged while making thumbnail generation deterministic and safe.
+
+### Transform recipe
+
+The `transformToWebp` utility follows the validated prototype settings: maximum 512-pixel edge, quality 80, `fit: "inside"`, `withoutEnlargement: true`, `rotate()` to honor EXIF orientation, and automatic WebP output without retaining unnecessary metadata. The transform accepts in-memory bytes and returns `image/webp` output with width, height, bytes, and safe metadata for later application logic.
+
+### Memory and CR2 gate
+
+The A2 service remains in-memory only. It accepts source bytes in a Buffer and returns the derived WebP bytes plus metadata. This is a deliberate design for local foundation work, but the future worker must evaluate memory limits and payload size before processing large or exotic source files, especially CR2 preview extraction and large RAW previews. Standard-image support is complete and verified.
+
+The local-only `extract-raw-preview@1.1.0` experiment successfully selected an embedded JPEG from the representative local Canon CR2 sample: 5472 × 3648 pixels and 2,746,504 bytes. Compatibility was demonstrated locally on Node.js 24. The CR2's IFD0 Orientation is 8, while the extracted JPEG has no Orientation tag, so the initial 512 × 341 WebP was sideways. The local probe now reads the bounded TIFF IFD0 Orientation and uses it only when the extracted preview has no orientation of its own; preview EXIF orientation takes precedence. The corrected CR2 orientation handling was validated locally on Node.js 24 using a representative Canon CR2 file. The extracted JPEG preview was 5472 × 3648 pixels (2,746,504 bytes), with CR2 IFD0 Orientation 8. The resulting WebP was 341 × 512 pixels (41,620 bytes), and visual inspection confirmed that its orientation matches the original photograph. This validates the representative sample only. Linux Lambda packaging, broader CR2 compatibility, and integration into the production ThumbnailService remain pending. The expected result for this sample is an upright portrait WebP of approximately 341 × 512, with the same high-quality embedded JPEG extraction. This evidence validates the representative sample only, not all CR2 files. The main `ThumbnailService` still deliberately rejects CR2. Linux Lambda packaging and production integration have not been validated.
+
+The repo includes an optional local-only CR2 probe script for user-supplied RAW files:
+
+```sh
+npm run thumbnail:cr2:probe -- "<local-file.CR2>"
+npm run thumbnail:cr2:probe -- "<local-file.CR2>" --webp "<separate-output-file.webp>"
+```
+
+The script prints sanitized JSON only: success/failure category, selected embedded preview MIME type, dimensions, resulting WebP dimensions, and bytes. It does not upload, modify, or print private path details. The optional output flag creates a separate WebP file and refuses to overwrite an existing file or the source.
+
+### Local design contract
+
+- Do not import backend config or storage credentials in the thumbnail utility layer.
+- Keep Sharp and any CR2 preview extractor in development-only tooling for this A2 stage.
+- Return structured nonfatal results for unsupported inputs instead of throwing for ordinary cases.
+- Preserve current API contracts and original `AccessUrl` semantics; this change does not add a `ThumbnailAccessUrl` or storage-write path.
+- CR2 integration remains explicitly pending despite the representative local sample result; production eligibility stays disabled until the owner authorizes adoption, and Linux packaging is separately unvalidated.

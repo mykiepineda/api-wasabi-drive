@@ -118,6 +118,26 @@ const requestStatus = async (app, path, headers = {}) =>
 
 test.afterEach(restoreEnvironment);
 
+test("Express and lightweight thumbnail entrypoints do not load thumbnail processors", () => {
+  const script = [
+    "process.env.ENTRA_TENANT_ID = 'tenant-id';",
+    "process.env.ENTRA_API_CLIENT_ID = 'api-client-id';",
+    "process.env.ENTRA_REQUIRED_SCOPE = 'WasabiDrive.Access';",
+    `process.env.ENTRA_TRUSTED_USER_OBJECT_IDS = '${trustedUserObjectId}';`,
+    "require('./src/app');",
+    "require('./src/thumbnail');",
+    "const forbidden = Object.keys(require.cache).filter((path) => /[\\\\/]node_modules[\\\\/](?:sharp|extract-raw-preview)[\\\\/]|[\\\\/]src[\\\\/]thumbnail[\\\\/](?:cr2|service|transform)\\.js$/i.test(path));",
+    "if (forbidden.length) process.exit(1);",
+  ].join(" ");
+
+  assert.doesNotThrow(() =>
+    execFileSync(process.execPath, ["-e", script], {
+      cwd: require("node:process").cwd(),
+      stdio: "ignore",
+    }),
+  );
+});
+
 test("health route returns its fixed response without authentication", async () => {
   setRequiredEntraEnvironment();
   clearApplicationModules();

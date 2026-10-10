@@ -28,8 +28,6 @@ const evaluateThumbnailEligibility = (input = {}) => {
   const region = input.region ?? input.sourceRegion;
   const bucket = input.bucket ?? input.sourceBucket;
   const etag = input.etag ?? input.normalizedETag ?? input.ETag;
-  const allowCR2Preview = Boolean(input.allowCR2Preview ?? input.allowRawPreview ?? false);
-
   if (!isPositiveSafeInteger(size)) {
     return { eligible: false, reason: "zero-byte-object", category: "unsupported" };
   }
@@ -67,9 +65,9 @@ const evaluateThumbnailEligibility = (input = {}) => {
 
   if (RAW_PREVIEW_EXTENSIONS.has(normalizedExtension)) {
     return {
-      eligible: false,
-      reason: "cr2-preview-pending-approval",
-      category: "unsupported",
+      eligible: true,
+      reason: "cr2-preview-supported",
+      category: "cr2-preview",
       extension: normalizedExtension,
     };
   }

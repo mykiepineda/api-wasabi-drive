@@ -149,7 +149,7 @@ The repository rejects blank region, bucket, source key, or ETag values and does
 
 ### Eligibility policy
 
-The production allowlist is intentionally distinct from the A1 evidence classifier. Supported standard formats are `jpg`, `jpeg`, `jfif`, `png`, and `webp`. The `nef` path remains deferred, and `cr2` is non-eligible through the main service pending owner approval of real-sample extraction evidence. Unsupported formats and folder markers are treated as nonfatal results rather than failures. This keeps the original object flow unchanged while making thumbnail generation deterministic and safe.
+The production allowlist is intentionally distinct from the A1 evidence classifier. Supported standard formats are `jpg`, `jpeg`, `jfif`, `png`, and `webp`. The `nef` path remains deferred. Unsupported formats and folder markers are treated as nonfatal results rather than failures. This keeps the original object flow unchanged while making thumbnail generation deterministic and safe.
 
 ### Transform recipe
 
@@ -159,7 +159,7 @@ The `transformToWebp` utility follows the validated prototype settings: maximum 
 
 The A2 service remains in-memory only. It accepts source bytes in a Buffer and returns the derived WebP bytes plus metadata. This is a deliberate design for local foundation work, but the future worker must evaluate memory limits and payload size before processing large or exotic source files, especially CR2 preview extraction and large RAW previews. Standard-image support is complete and verified.
 
-The local-only `extract-raw-preview@1.1.0` experiment successfully selected an embedded JPEG from the representative local Canon CR2 sample: 5472 × 3648 pixels and 2,746,504 bytes. Compatibility was demonstrated locally on Node.js 24. The CR2's IFD0 Orientation is 8, while the extracted JPEG has no Orientation tag, so the initial 512 × 341 WebP was sideways. The local probe now reads the bounded TIFF IFD0 Orientation and uses it only when the extracted preview has no orientation of its own; preview EXIF orientation takes precedence. The corrected CR2 orientation handling was validated locally on Node.js 24 using a representative Canon CR2 file. The extracted JPEG preview was 5472 × 3648 pixels (2,746,504 bytes), with CR2 IFD0 Orientation 8. The resulting WebP was 341 × 512 pixels (41,620 bytes), and visual inspection confirmed that its orientation matches the original photograph. This validates the representative sample only. Linux Lambda packaging, broader CR2 compatibility, and integration into the production ThumbnailService remain pending. The expected result for this sample is an upright portrait WebP of approximately 341 × 512, with the same high-quality embedded JPEG extraction. This evidence validates the representative sample only, not all CR2 files. The main `ThumbnailService` still deliberately rejects CR2. Linux Lambda packaging and production integration have not been validated.
+The local-only `extract-raw-preview@1.1.0` experiment successfully selected an embedded JPEG from the representative local Canon CR2 sample: 5472 × 3648 pixels and 2,746,504 bytes. Compatibility was demonstrated locally on Node.js 24. The CR2's IFD0 Orientation is 8, while the extracted JPEG has no Orientation tag, so the initial 512 × 341 WebP was sideways. The local probe reads the bounded TIFF IFD0 Orientation and uses it only when the extracted preview has no orientation of its own; preview EXIF orientation takes precedence. The corrected output was 341 × 512 pixels (41,620 bytes), visually confirmed upright. This validates the representative sample only, not all CR2 files or Linux packaging.
 
 The repo includes an optional local-only CR2 probe script for user-supplied RAW files:
 
@@ -173,7 +173,19 @@ The script prints sanitized JSON only: success/failure category, selected embedd
 ### Local design contract
 
 - Do not import backend config or storage credentials in the thumbnail utility layer.
-- Keep Sharp and any CR2 preview extractor in development-only tooling for this A2 stage.
+- Keep Sharp and the CR2 preview extractor in development dependencies; Linux worker packaging is not yet validated.
 - Return structured nonfatal results for unsupported inputs instead of throwing for ordinary cases.
 - Preserve current API contracts and original `AccessUrl` semantics; this change does not add a `ThumbnailAccessUrl` or storage-write path.
-- CR2 integration remains explicitly pending despite the representative local sample result; production eligibility stays disabled until the owner authorizes adoption, and Linux packaging is separately unvalidated.
+- The lightweight `src/thumbnail/index.js` remains separate from the processing service and its Sharp/CR2 dependencies.
+
+## Phase 8 Task 8C-A3 — In-Memory CR2 Service Integration
+
+The in-memory `applyThumbnailPolicy()` service now accepts eligible `.cr2` objects, extracts the embedded JPEG, and applies the same fixed v1 512px/quality-80 WebP transform and original-source identity as standard images. Preview EXIF orientation takes precedence; CR2 IFD0 orientation is used only as a fallback, with mirrored orientations rejected. Declined, malformed, or unusable previews return a nonfatal result without a derived key or WebP. Standard formats and the API import graph remain unchanged.
+
+The representative local sample evidence remains 5472 × 3648 / 2,746,504-byte embedded JPEG to an upright 341 × 512 / 41,620-byte WebP. The main-service real-file smoke is pending owner execution because the sample is not present in this workspace. Run with Node.js 24:
+
+```powershell
+node scripts/thumbnail-cr2-service-smoke.js "<local-file.CR2>"
+```
+
+The command uses synthetic identity metadata and prints only eligibility, reason, output dimensions, byte count, and content type. NEF, HEIC/HEIF, unsupported CR2 variants, other RAW formats, and documents/video remain deferred or unsupported. Private derived Wasabi writes/backfill, SNS/Lambda processing, API `ThumbnailAccessUrl`, and React grid integration are not implemented. Linux Lambda packaging, worker memory requirements, and compatibility across CR2 variants are not yet proven.

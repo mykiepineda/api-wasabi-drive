@@ -38,6 +38,9 @@ const sanitizeResult = (result) => ({
   width: result.width,
   height: result.height,
   byteLength: result.byteLength,
+  sourceOrientation: result.sourceOrientation,
+  orientationSource: result.orientationSource,
+  orientationApplied: result.orientationApplied,
   webp: result.webp
     ? {
         width: result.webp.width,
@@ -68,12 +71,20 @@ const main = async (args) => {
         width: null,
         height: null,
         byteLength: null,
+        sourceOrientation: null,
+        orientationSource: null,
+        orientationApplied: false,
         webp: null,
       }, null, 2));
       return 1;
     }
 
-    const webp = await transformToWebp({ input: preview.buffer, maxEdge: 512, quality: 80 });
+    const webp = await transformToWebp({
+      input: preview.buffer,
+      maxEdge: 512,
+      quality: 80,
+      fallbackOrientation: preview.fallbackOrientation,
+    });
     if (options.outputPath) {
       await fs.writeFile(options.outputPath, webp.buffer, { flag: "wx" });
     }
@@ -85,6 +96,9 @@ const main = async (args) => {
       width: preview.width ?? null,
       height: preview.height ?? null,
       byteLength: preview.byteLength ?? null,
+      sourceOrientation: preview.sourceOrientation ?? null,
+      orientationSource: preview.orientationSource ?? "none",
+      orientationApplied: preview.orientationApplied ?? false,
       webp: {
         width: webp.width,
         height: webp.height,
@@ -93,7 +107,18 @@ const main = async (args) => {
     }), null, 2));
     return 0;
   } catch {
-    console.log(JSON.stringify({ eligible: false, reason: "probe-failed", mimeType: null, width: null, height: null, byteLength: null, webp: null }, null, 2));
+    console.log(JSON.stringify({
+      eligible: false,
+      reason: "probe-failed",
+      mimeType: null,
+      width: null,
+      height: null,
+      byteLength: null,
+      sourceOrientation: null,
+      orientationSource: null,
+      orientationApplied: false,
+      webp: null,
+    }, null, 2));
     return 1;
   }
 };

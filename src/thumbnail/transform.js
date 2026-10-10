@@ -2,11 +2,18 @@ const sharp = require("sharp");
 
 const DEFAULT_MAX_EDGE = 512;
 const DEFAULT_QUALITY = 80;
+const ORIENTATION_ROTATION_DEGREES = new Map([
+  [1, 0],
+  [3, 180],
+  [6, 90],
+  [8, 270],
+]);
 
 const transformToWebp = async ({
   input,
   maxEdge = DEFAULT_MAX_EDGE,
   quality = DEFAULT_QUALITY,
+  fallbackOrientation,
 }) => {
   if (!Buffer.isBuffer(input)) {
     throw new TypeError("Thumbnail transform requires a buffer of source image bytes.");
@@ -21,15 +28,22 @@ const transformToWebp = async ({
     throw new RangeError("Thumbnail quality must be an integer from 1 through 100.");
   }
 
-  const pipeline = sharp(input)
-    .rotate()
+  if (fallbackOrientation !== undefined && !ORIENTATION_ROTATION_DEGREES.has(fallbackOrientation)) {
+    throw new RangeError("Thumbnail fallback orientation is unsupported.");
+  }
+
+  let pipeline = sharp(input);
+  pipeline = fallbackOrientation === undefined
+    ? pipeline.rotate()
+    : pipeline.rotate(ORIENTATION_ROTATION_DEGREES.get(fallbackOrientation));
+
+  const { data, info } = await pipeline
     .resize(maxEdge, maxEdge, {
       fit: "inside",
       withoutEnlargement: true,
     })
-    .webp({ quality });
-
-  const { data, info } = await pipeline.toBuffer({ resolveWithObject: true });
+    .webp({ quality })
+    .toBuffer({ resolveWithObject: true });
 
   return {
     width: info.width,

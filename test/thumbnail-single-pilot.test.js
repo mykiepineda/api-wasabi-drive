@@ -181,6 +181,24 @@ test("ETag and unsupported conditional request failures do not write derived byt
   }
 });
 
+test("ambiguous destination HEAD failure aborts execution before source GET or derived PUT", async () => {
+  const { storage, calls } = makeStorage({
+    async headDerived() {
+      throw new ThumbnailStorageError("provider-failure");
+    },
+  });
+
+  const result = await generateThumbnailForObject({
+    ...source,
+    storage,
+    dryRun: false,
+  });
+
+  assert.equal(result.category, "failed");
+  assert.deepEqual(calls.map(({ operation }) => operation), ["head-source", "head-derived"]);
+  assert.equal(calls.some(({ operation }) => ["get-source", "put-derived"].includes(operation)), false);
+});
+
 test("conditional create race is benign only after destination HEAD confirms the object exists", async () => {
   let derivedHeadCount = 0;
   let existsAfterPut = true;

@@ -45,7 +45,9 @@ const endpointForRegion = (region) => region === "us-east-1"
 const getErrorCode = (error) => error?.Code || error?.code || error?.name;
 const getStatusCode = (error) => error?.$metadata?.httpStatusCode ?? error?.statusCode;
 
-const isNotFound = (error) => ["NotFound", "NoSuchKey"].includes(getErrorCode(error));
+const isNotFound = (error) =>
+  getStatusCode(error) === 404
+  && ["NotFound", "NoSuchKey"].includes(getErrorCode(error));
 const isPreconditionFailure = (error) =>
   getStatusCode(error) === 412
   || getErrorCode(error) === "PreconditionFailed"

@@ -65,37 +65,46 @@ test("source HEAD returns only ETag and size; malformed source metadata is not n
   }), { etag: '"not-analyzed"', size: 0 });
 });
 
-test("derived HEAD treats explicit missing keys as absent but never hides forbidden or ambiguous 404", async () => {
-  let currentError = providerError("NotFound", 404);
-  const { storage } = makeStorage(() => {
-    if (currentError) {
-      throw currentError;
-    }
-    return {};
+test("derived HEAD treats only 404 with a recognized not-found code as absent", async (t) => {
+  for (const code of ["NotFound", "NoSuchKey"]) {
+    await t.test(`404 + ${code} is absent`, async () => {
+      const { storage } = makeStorage(() => {
+        throw providerError(code, 404);
+      });
+      assert.equal(await storage.headDerived({
+        bucket: "test-derived",
+        key: "v1/ab/hash.webp",
+        region: "ap-southeast-2",
+      }), false);
+    });
+  }
+
+  for (const [status, code] of [
+    [403, "NotFound"],
+    [500, "NoSuchKey"],
+    [404, "AccessDenied"],
+    [403, "AccessDenied"],
+  ]) {
+    await t.test(`${status} + ${code} fails closed`, async () => {
+      const { storage } = makeStorage(() => {
+        throw providerError(code, status);
+      });
+      await assert.rejects(
+        storage.headDerived({ bucket: "test-derived", key: "key", region: "ap-southeast-2" }),
+        { code: "provider-failure" },
+      );
+    });
+  }
+
+  await t.test("transport error fails closed", async () => {
+    const { storage } = makeStorage(() => {
+      throw Object.assign(new Error("timeout detail"), { code: "ETIMEDOUT" });
+    });
+    await assert.rejects(
+      storage.headDerived({ bucket: "test-derived", key: "key", region: "ap-southeast-2" }),
+      { code: "provider-failure" },
+    );
   });
-
-  assert.equal(await storage.headDerived({
-    bucket: "test-derived",
-    key: "v1/ab/hash.webp",
-    region: "ap-southeast-2",
-  }), false);
-
-  currentError = providerError("AccessDenied", 403);
-  await assert.rejects(
-    storage.headDerived({ bucket: "test-derived", key: "key", region: "ap-southeast-2" }),
-    { code: "provider-failure" },
-  );
-  currentError = providerError("InternalServerError", 404);
-  await assert.rejects(
-    storage.headDerived({ bucket: "test-derived", key: "key", region: "ap-southeast-2" }),
-    { code: "provider-failure" },
-  );
-
-  currentError = Object.assign(new Error("timeout detail"), { code: "ETIMEDOUT" });
-  await assert.rejects(
-    storage.headDerived({ bucket: "test-derived", key: "key", region: "ap-southeast-2" }),
-    { code: "provider-failure" },
-  );
 });
 
 test("conditional source GET sends IfMatch and validates response identity and size", async () => {

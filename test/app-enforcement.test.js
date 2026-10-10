@@ -126,7 +126,7 @@ test("Express and lightweight thumbnail entrypoints do not load thumbnail proces
     `process.env.ENTRA_TRUSTED_USER_OBJECT_IDS = '${trustedUserObjectId}';`,
     "require('./src/app');",
     "require('./src/thumbnail');",
-    "const forbidden = Object.keys(require.cache).filter((path) => /[\\\\/]node_modules[\\\\/](?:sharp|extract-raw-preview)[\\\\/]|[\\\\/]src[\\\\/]thumbnail[\\\\/](?:cr2|service|transform)\\.js$/i.test(path));",
+    "const forbidden = Object.keys(require.cache).filter((path) => /[\\\\/]node_modules[\\\\/](?:sharp|extract-raw-preview)[\\\\/]|[\\\\/]src[\\\\/]thumbnail[\\\\/](?:cr2|service|transform|generate)\\.js$|[\\\\/]src[\\\\/]storage[\\\\/]thumbnail-wasabi\\.js$/i.test(path));",
     "if (forbidden.length) process.exit(1);",
   ].join(" ");
 

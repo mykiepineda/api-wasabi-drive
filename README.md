@@ -182,10 +182,30 @@ The script prints sanitized JSON only: success/failure category, selected embedd
 
 The in-memory `applyThumbnailPolicy()` service now accepts eligible `.cr2` objects, extracts the embedded JPEG, and applies the same fixed v1 512px/quality-80 WebP transform and original-source identity as standard images. Preview EXIF orientation takes precedence; CR2 IFD0 orientation is used only as a fallback, with mirrored orientations rejected. Declined, malformed, or unusable previews return a nonfatal result without a derived key or WebP. Standard formats and the API import graph remain unchanged.
 
-The representative local sample evidence remains 5472 × 3648 / 2,746,504-byte embedded JPEG to an upright 341 × 512 / 41,620-byte WebP. The main-service real-file smoke is pending owner execution because the sample is not present in this workspace. Run with Node.js 24:
+The owner completed the real-file main-service validation locally with Node.js 24: a representative Canon CR2 produced an upright 341 × 512 WebP of 41,620 bytes. Run the local service smoke with Node.js 24:
 
 ```powershell
 node scripts/thumbnail-cr2-service-smoke.js "<local-file.CR2>"
 ```
 
 The command uses synthetic identity metadata and prints only eligibility, reason, output dimensions, byte count, and content type. NEF, HEIC/HEIF, unsupported CR2 variants, other RAW formats, and documents/video remain deferred or unsupported. Private derived Wasabi writes/backfill, SNS/Lambda processing, API `ThumbnailAccessUrl`, and React grid integration are not implemented. Linux Lambda packaging, worker memory requirements, and compatibility across CR2 variants are not yet proven.
+
+## Phase 8 Task 8C-B1 — One-Object TEST Thumbnail Pilot
+
+B1 adds a local-only pilot for a single explicitly selected TEST object. Configure `THUMBNAIL_PILOT_STAGE=test`, an allowlisted TEST source bucket, a separate private TEST derived bucket and its Wasabi region, and dedicated least-privilege TEST credentials. The credentials must allow reading only the controlled source and HEAD/conditional PUT in the derived bucket, with no source-object Put/Delete permissions. Do not reuse the Express application's Wasabi credentials.
+
+Run a metadata-only dry run by default:
+
+```powershell
+npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region>
+```
+
+An explicitly approved live one-object operation requires both confirmation flags:
+
+```powershell
+npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region> --execute --confirm-test-write
+```
+
+The pilot checks the deterministic destination key before any source-body download, rejects known oversized objects, and enforces a 25 MiB source stream limit. Source GetObject uses `IfMatch` and checks the returned ETag and size; derived PutObject uses `IfNoneMatch: "*"`. It never falls back to unconditional reads or writes. Actual Wasabi compatibility for both conditional operations still requires owner-led verification on controlled TEST buckets before live use.
+
+B1 does not authorize production writes or a backfill, and adds no SNS processing, Lambda worker, API/frontend changes, or cloud resources.

@@ -13,6 +13,7 @@
     "locate:images": "node scripts/locate-images.js",
     "thumbnail:prototype": "node scripts/prototype-thumbnail.js",
     "thumbnail:cr2:probe": "node scripts/thumbnail-cr2-probe.js",
+    "thumbnail:pilot": "node scripts/thumbnail-single-pilot.js",
     "start": "nodemon src/server.js",
     "deploy:test": "serverless deploy --stage test",
     "deploy:prd": "serverless deploy --stage prd"

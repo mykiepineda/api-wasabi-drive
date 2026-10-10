@@ -45,6 +45,21 @@ The current verified source baseline is backend `master` after Phase 8C-A3 was m
 - Explicit no-network mocked unit tests for region separation, ETag conditional read, skip-if-present, absent vs forbidden, destination write precondition, no source writes, size cap and timeout handling, and error sanitization.
 - Manual validation comes **after** owner code review and private test bucket / least-privilege credential preparation. Never run a live upload from tests.
 
+## One-object TEST thumbnail pilot
+
+The local `thumbnail:pilot` command is limited to a single explicitly selected source object. It requires `THUMBNAIL_PILOT_STAGE=test`, a configured test source-bucket allowlist, a separate test derived bucket whose name is clearly test-designated, a destination Wasabi region, and dedicated `THUMBNAIL_TEST_WASABI_*` credentials. These credentials must be restricted to reading the controlled source and HEAD/conditional-PUT on the private derived bucket; they must not write or delete source objects. The CLI does not accept destination bucket or stage overrides and rejects production-mode configuration and production-designated bucket names.
+
+Dry-run is the default and performs only source and derived-object HEAD requests; it does not fetch source bytes or write. A live single-object run requires both `--execute` and `--confirm-test-write`:
+
+```text
+npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region>
+npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region> --execute --confirm-test-write
+```
+
+Source regions must be explicitly supplied and recognized; destination region comes from `THUMBNAIL_TEST_DERIVED_REGION`. Source bucket must exactly match `THUMBNAIL_TEST_SOURCE_BUCKET`. The pilot refuses source/destination bucket equality, checks destination existence before downloading, conditions source GET on the HEAD ETag, enforces a 25 MiB download cap while reading the stream, and uses conditional create for derived writes. It does not fall back to unconditioned requests. Wasabi compatibility for conditional GET and conditional PUT must be verified by the owner on the controlled TEST buckets before any live run. The byte cap is a conservative pilot safeguard, not a permanent image policy.
+
+No buckets, users, policies, or credentials are provisioned by this repository. A later owner-run TEST pilot requires a private test source bucket, a private derived bucket in a known Wasabi region, a dedicated least-privilege TEST user/key, and one small non-sensitive sample. The pilot is local-only and is not wired into the API, Express Lambda, or deployment configuration.
+
 ## Validation and delivery
 
 Use Node 24; preserve all existing tests. Run `npm test`, focused unit tests, `git diff --check`, and `git status --short`. Bruno tests are not needed when the API is unchanged. Confirm the Express import graph does not load Sharp or thumbnail-write modules; no changes to `serverless.yml`, `src/app.js`, auth, existing storage browsing, API routes, existing presigned URL behavior, or GitHub Actions.

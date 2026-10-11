@@ -19,7 +19,11 @@ const parseArguments = (args) => {
   const values = new Map();
   const flags = new Set();
   const valueFlags = new Set(["--source-bucket", "--source-key", "--source-region"]);
-  const booleanFlags = new Set(["--execute", "--confirm-test-write"]);
+  const booleanFlags = new Set([
+    "--execute",
+    "--confirm-test-write",
+    "--accept-non-atomic-put",
+  ]);
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -44,7 +48,10 @@ const parseArguments = (args) => {
       throw new Error("invalid-arguments");
     }
   }
-  if (flags.has("--confirm-test-write") !== flags.has("--execute")) {
+  const execute = flags.has("--execute");
+  const hasConfirmation = flags.has("--confirm-test-write");
+  const acceptsNonAtomicPut = flags.has("--accept-non-atomic-put");
+  if (execute ? (!hasConfirmation || !acceptsNonAtomicPut) : (hasConfirmation || acceptsNonAtomicPut)) {
     throw new Error("invalid-arguments");
   }
 
@@ -52,7 +59,7 @@ const parseArguments = (args) => {
     sourceBucket: values.get("--source-bucket"),
     sourceKey: values.get("--source-key"),
     sourceRegion: values.get("--source-region"),
-    execute: flags.has("--execute"),
+    execute,
   };
 };
 
@@ -144,6 +151,7 @@ const main = async (
       destinationRegion: config.destinationRegion,
       storage,
       dryRun: !options.execute,
+      ...(options.execute ? { allowNonAtomicWrite: true } : {}),
     });
   } catch {
     result = { category: "failed" };

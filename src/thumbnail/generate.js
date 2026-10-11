@@ -23,6 +23,7 @@ const generateThumbnailForObject = async ({
   destinationRegion,
   storage,
   dryRun = true,
+  allowNonAtomicWrite = false,
   applyPolicy = applyThumbnailPolicy,
 }) => {
   if (
@@ -34,6 +35,9 @@ const generateThumbnailForObject = async ({
   }
   if (!storage || typeof storage.headSource !== "function" || typeof storage.headDerived !== "function") {
     return failure("failed", "invalid-storage-configuration");
+  }
+  if (!dryRun && allowNonAtomicWrite !== true) {
+    return failure("failed", "non-atomic-write-not-accepted");
   }
 
   try {
@@ -112,6 +116,15 @@ const generateThumbnailForObject = async ({
       || result.dimensions.height <= 0
     ) {
       return failure("failed", "invalid-thumbnail-result");
+    }
+
+    const existsBeforePut = await storage.headDerived({
+      bucket: destinationBucket,
+      key: derivedKey,
+      region: destinationRegion,
+    });
+    if (existsBeforePut) {
+      return { ...failure("already-present"), derivedKey };
     }
 
     try {

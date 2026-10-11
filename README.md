@@ -200,12 +200,16 @@ Run a metadata-only dry run by default:
 npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region>
 ```
 
-An explicitly approved live one-object operation requires both confirmation flags:
+An explicitly approved live one-object operation requires all three acknowledgements:
 
 ```powershell
-npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region> --execute --confirm-test-write
+npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region> --execute --confirm-test-write --accept-non-atomic-put
 ```
 
-The pilot checks the deterministic destination key before any source-body download, rejects known oversized objects, and enforces a 25 MiB source stream limit. Source GetObject uses `IfMatch` and checks the returned ETag and size; derived PutObject uses `IfNoneMatch: "*"`. It never falls back to unconditional reads or writes. Actual Wasabi compatibility for both conditional operations still requires owner-led verification on controlled TEST buckets before live use.
+The workflow checks the deterministic destination key before downloading source bytes, then checks that same key again immediately before PUT. An existing object at either check is reported as `already-present`; an ambiguous HEAD error stops the operation without PUT. The source GetObject uses `IfMatch` and checks the returned ETag and size; downloads are rejected above 25 MiB and capped while reading. Derived PutObject retains `IfNoneMatch: "*"`, with no unconditional fallback.
 
-B1 does not authorize production writes or a backfill, and adds no SNS processing, Lambda worker, API/frontend changes, or cloud resources.
+**Known Wasabi limitation:** in a controlled Sydney test, Wasabi stored replacement bytes when a second PutObject targeted an existing key, despite the prepared and signed `If-None-Match: *` request. The equivalent Amazon S3 request returned HTTP 412 and preserved the existing bytes. A separate Wasabi `GetObject IfMatch` test rejected a mismatched ETag. Thus the source-read condition was verified in that test; Wasabi's create-only PUT condition was not enforced, and a successful Wasabi PUT does not prove otherwise.
+
+The explicit flag accepts this known non-atomic behavior only for the guarded TEST pilot. Use one human-operated process at a time. The two destination HEAD checks reduce the duplicate-write window but do not close the race, provide a distributed lock, or protect against a concurrent or privileged external writer. Never use this pilot for production objects or concurrent processing. Owner code review and approval plus separately prepared private TEST buckets and least-privilege TEST credentials are required before manual live validation; automated tests make no network requests or live writes.
+
+B1R does not authorize production writes or a backfill. B2/automatic workers remain blocked pending separate architectural approval. No SNS processing, Lambda worker, API/frontend changes, or cloud resources are included.

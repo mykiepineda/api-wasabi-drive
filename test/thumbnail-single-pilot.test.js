@@ -63,12 +63,26 @@ const args = (extra = []) => [
   ...extra,
 ];
 
-test("CLI requires one explicit source and both live-write confirmations", () => {
+test("CLI requires one source and all three live-write acknowledgements", () => {
   assert.throws(() => parseArguments([]), /invalid-arguments/);
   assert.throws(() => parseArguments(args(["--execute"])), /invalid-arguments/);
   assert.throws(() => parseArguments(args(["--confirm-test-write"])), /invalid-arguments/);
+  assert.throws(() => parseArguments(args(["--accept-non-atomic-put"])), /invalid-arguments/);
+  assert.throws(() => parseArguments(args(["--execute", "--confirm-test-write"])), /invalid-arguments/);
+  assert.throws(() => parseArguments(args(["--execute", "--accept-non-atomic-put"])), /invalid-arguments/);
+  assert.throws(() => parseArguments(args(["--confirm-test-write", "--accept-non-atomic-put"])), /invalid-arguments/);
   assert.throws(() => parseArguments(args(["--stage", "prd"])), /invalid-arguments/);
-  assert.deepEqual(parseArguments(args(["--execute", "--confirm-test-write"])), {
+  assert.deepEqual(parseArguments(args()), {
+    sourceBucket: source.sourceBucket,
+    sourceKey: source.sourceKey,
+    sourceRegion: source.sourceRegion,
+    execute: false,
+  });
+  assert.deepEqual(parseArguments(args([
+    "--execute",
+    "--confirm-test-write",
+    "--accept-non-atomic-put",
+  ])), {
     sourceBucket: source.sourceBucket,
     sourceKey: source.sourceKey,
     sourceRegion: source.sourceRegion,
@@ -118,7 +132,12 @@ test("known derived objects skip before source body reads; unsupported metadata 
       return true;
     },
   });
-  const skipped = await generateThumbnailForObject({ ...source, storage: present.storage, dryRun: false });
+  const skipped = await generateThumbnailForObject({
+    ...source,
+    storage: present.storage,
+    dryRun: false,
+    allowNonAtomicWrite: true,
+  });
   assert.equal(skipped.category, "already-present");
   assert.deepEqual(present.calls.map(({ operation }) => operation), ["head-source", "head-derived"]);
 
@@ -139,6 +158,7 @@ test("known derived objects skip before source body reads; unsupported metadata 
       sourceKey: key,
       storage: unsupported.storage,
       dryRun: false,
+      allowNonAtomicWrite: true,
     });
     assert.equal(result.category, "unsupported");
     assert.deepEqual(unsupported.calls.map(({ operation }) => operation), ["head-source"]);
@@ -159,7 +179,12 @@ test("source and destination must differ and oversized source metadata is reject
   assert.equal(sameBucket.category, "failed");
   assert.equal(calls.length, 0);
 
-  const tooLarge = await generateThumbnailForObject({ ...source, storage, dryRun: false });
+  const tooLarge = await generateThumbnailForObject({
+    ...source,
+    storage,
+    dryRun: false,
+    allowNonAtomicWrite: true,
+  });
   assert.equal(tooLarge.category, "failed");
   assert.equal(tooLarge.reason, "source-too-large");
   assert.deepEqual(calls.map(({ operation }) => operation), ["head-source"]);
@@ -175,7 +200,12 @@ test("ETag and unsupported conditional request failures do not write derived byt
         throw new ThumbnailStorageError(code);
       },
     });
-    const result = await generateThumbnailForObject({ ...source, storage, dryRun: false });
+    const result = await generateThumbnailForObject({
+      ...source,
+      storage,
+      dryRun: false,
+      allowNonAtomicWrite: true,
+    });
     assert.equal(result.category, expected);
     assert.equal(calls.some(({ operation }) => operation === "put-derived"), false);
   }
@@ -192,11 +222,92 @@ test("ambiguous destination HEAD failure aborts execution before source GET or d
     ...source,
     storage,
     dryRun: false,
+    allowNonAtomicWrite: true,
   });
 
   assert.equal(result.category, "failed");
   assert.deepEqual(calls.map(({ operation }) => operation), ["head-source", "head-derived"]);
   assert.equal(calls.some(({ operation }) => ["get-source", "put-derived"].includes(operation)), false);
+});
+
+test("direct live workflow calls fail closed without explicit non-atomic-write permission", async () => {
+  for (const allowNonAtomicWrite of [undefined, false]) {
+    const { storage, calls } = makeStorage();
+    const result = await generateThumbnailForObject({
+      ...source,
+      storage,
+      dryRun: false,
+      allowNonAtomicWrite,
+    });
+
+    assert.equal(result.category, "failed");
+    assert.equal(result.reason, "non-atomic-write-not-accepted");
+    assert.deepEqual(calls, []);
+  }
+});
+
+test("destination appearing before PUT is skipped after the pre-PUT HEAD", async () => {
+  let derivedHeadCount = 0;
+  const { storage, calls } = makeStorage({
+    async headDerived() {
+      derivedHeadCount += 1;
+      return derivedHeadCount === 2;
+    },
+  });
+  const applyPolicy = async ({ sourceBytes, region, bucket, sourceKey, etag }) => ({
+    eligible: true,
+    derivedKey: createThumbnailKey({ region, bucket, sourceKey, etag }),
+    webpBuffer: sourceBytes,
+    contentType: "image/webp",
+    dimensions: { width: 1, height: 1 },
+  });
+
+  const result = await generateThumbnailForObject({
+    ...source,
+    storage,
+    dryRun: false,
+    allowNonAtomicWrite: true,
+    applyPolicy,
+  });
+
+  assert.equal(result.category, "already-present");
+  assert.deepEqual(calls.map(({ operation }) => operation), [
+    "head-source", "head-derived", "get-source", "head-derived",
+  ]);
+});
+
+test("ambiguous pre-PUT HEAD failure aborts without PUT", async () => {
+  let derivedHeadCount = 0;
+  const { storage, calls } = makeStorage({
+    async headDerived() {
+      derivedHeadCount += 1;
+      if (derivedHeadCount === 2) {
+        throw new ThumbnailStorageError("provider-failure");
+      }
+      return false;
+    },
+  });
+  const applyPolicy = async ({ sourceBytes, region, bucket, sourceKey, etag }) => ({
+    eligible: true,
+    derivedKey: createThumbnailKey({ region, bucket, sourceKey, etag }),
+    webpBuffer: sourceBytes,
+    contentType: "image/webp",
+    dimensions: { width: 1, height: 1 },
+  });
+
+  const result = await generateThumbnailForObject({
+    ...source,
+    storage,
+    dryRun: false,
+    allowNonAtomicWrite: true,
+    applyPolicy,
+  });
+
+  assert.equal(result.category, "failed");
+  assert.deepEqual(calls.map(({ operation }) => operation), [
+    "head-source", "head-derived", "get-source", "head-derived",
+  ]);
+  assert.equal(calls.some(({ operation }) => operation === "put-derived"), false);
 });
 
 test("conditional create race is benign only after destination HEAD confirms the object exists", async () => {
@@ -205,7 +316,7 @@ test("conditional create race is benign only after destination HEAD confirms the
   const { storage, calls } = makeStorage({
     async headDerived() {
       derivedHeadCount += 1;
-      return derivedHeadCount > 1 && existsAfterPut;
+      return derivedHeadCount > 2 && existsAfterPut;
     },
     async putDerived() {
       throw new ThumbnailStorageError("already-exists");
@@ -222,10 +333,11 @@ test("conditional create race is benign only after destination HEAD confirms the
     ...source,
     storage,
     dryRun: false,
+    allowNonAtomicWrite: true,
     applyPolicy,
   });
   assert.equal(result.category, "already-present");
-  assert.equal(calls.filter(({ operation }) => operation === "head-derived").length, 2);
+  assert.equal(calls.filter(({ operation }) => operation === "head-derived").length, 3);
 
   derivedHeadCount = 0;
   existsAfterPut = false;
@@ -233,6 +345,7 @@ test("conditional create race is benign only after destination HEAD confirms the
     ...source,
     storage,
     dryRun: false,
+    allowNonAtomicWrite: true,
     applyPolicy,
   });
   assert.equal(failed.category, "failed");
@@ -255,10 +368,15 @@ test("standard image is transformed by the existing in-memory service and condit
     ...source,
     storage,
     dryRun: false,
+    allowNonAtomicWrite: true,
   });
-
   assert.equal(result.category, "generated");
   assert.equal(result.contentType, "image/webp");
+  assert.deepEqual(calls.map(({ operation }) => operation), [
+    "head-source", "head-derived", "get-source", "head-derived", "put-derived",
+  ]);
+  assert.equal(calls.filter(({ operation }) => operation === "head-derived").length, 2);
+  assert.equal(calls.filter(({ operation }) => operation === "put-derived").length, 1);
   assert.deepEqual(result.dimensions, { width: 8, height: 4 });
   assert.equal(result.bytes, calls.find(({ operation }) => operation === "put-derived").params.body.length);
   const put = calls.find(({ operation }) => operation === "put-derived").params;
@@ -305,6 +423,7 @@ test("CR2 follows the existing thumbnail service and extracted preview path", as
       ...cr2Source,
       storage,
       dryRun: false,
+      allowNonAtomicWrite: true,
     });
     assert.equal(result.category, "generated");
     assert.equal(result.contentType, "image/webp");
@@ -347,6 +466,7 @@ test("CLI pins the source allowlist, defaults to dry-run, and prints no private 
   });
   assert.equal(status, 0);
   assert.equal(generatedOptions.dryRun, true);
+  assert.equal(generatedOptions.allowNonAtomicWrite, undefined);
   assert.equal(generatedOptions.destinationBucket, source.destinationBucket);
   assert.deepEqual(JSON.parse(output), {
     category: "generated",
@@ -358,10 +478,32 @@ test("CLI pins the source allowlist, defaults to dry-run, and prints no private 
   assert.equal(output.includes("private"), false);
 });
 
+test("CLI grants live-write permission only after all TEST acknowledgements", async () => {
+  let generatedOptions;
+  const status = await main(args([
+    "--execute",
+    "--confirm-test-write",
+    "--accept-non-atomic-put",
+  ]), {
+    env: testEnvironment(),
+    createStorage: () => ({}),
+    generate: async (options) => {
+      generatedOptions = options;
+      return { category: "generated" };
+    },
+    write: () => {},
+  });
+
+  assert.equal(status, 0);
+  assert.equal(generatedOptions.dryRun, false);
+  assert.equal(generatedOptions.allowNonAtomicWrite, true);
+});
+
 test("CLI production or unapproved source selection fails closed before storage creation", async () => {
   let storageCreated = false;
   let output;
-  const status = await main(args(["--execute", "--confirm-test-write"]), {
+  const liveFlags = ["--execute", "--confirm-test-write", "--accept-non-atomic-put"];
+  const status = await main(args(liveFlags), {
     env: testEnvironment({ DEPLOYMENT_STAGE: "prd" }),
     createStorage: () => {
       storageCreated = true;

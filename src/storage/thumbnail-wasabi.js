@@ -191,17 +191,49 @@ const createThumbnailWasabiStorage = ({
     },
 
     async listSourcePage({ bucket, region, prefix, maxKeys, startAfter }) {
-      const safePrefix = typeof prefix === "string" ? prefix : "";
-      const safeLimit = Number.isInteger(maxKeys) ? Math.max(1, Math.min(maxKeys, 10)) : 10;
+      if (
+        typeof bucket !== "string" || !bucket.trim()
+        || typeof prefix !== "string"
+        || !prefix.startsWith("pilot/")
+        || prefix.includes("\\")
+        || prefix.includes("//")
+        || prefix.split("/").some((part) => part === "." || part === "..")
+      ) {
+        throw new ThumbnailStorageError("invalid-list-prefix");
+      }
+      if (!Number.isInteger(maxKeys) || maxKeys < 1 || maxKeys > 10) {
+        throw new ThumbnailStorageError("invalid-list-limit");
+      }
+      if (
+        startAfter !== undefined
+        && (
+          typeof startAfter !== "string"
+          || !startAfter.trim()
+          || !startAfter.startsWith(prefix)
+        )
+      ) {
+        throw new ThumbnailStorageError("invalid-list-start-after");
+      }
+
       const params = {
         Bucket: bucket,
-        Prefix: safePrefix,
-        MaxKeys: safeLimit,
+        Prefix: prefix,
+        MaxKeys: maxKeys,
       };
-      if (typeof startAfter === "string" && startAfter.trim()) {
+      if (startAfter !== undefined) {
         params.StartAfter = startAfter;
       }
-      return send(region, new ListObjectsV2Command(params), "list-source-page");
+      const page = await send(region, new ListObjectsV2Command(params), "list-source-page");
+      return {
+        IsTruncated: page?.IsTruncated,
+        ...(Array.isArray(page?.Contents)
+          ? {
+            Contents: page.Contents.map(({ Key, Size, ETag }) => ({ Key, Size, ETag })),
+          }
+          : page?.Contents === undefined
+            ? {}
+            : { Contents: page.Contents }),
+      };
     },
 
     async getSourceBuffer({

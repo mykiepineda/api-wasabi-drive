@@ -74,17 +74,23 @@ npm run locate:images -- --bucket <bucket-1> --bucket <bucket-2> --largest 10
 
 ## Phase 8C-B2-A TEST backfill (owner-run only)
 
-This repository contains a guarded local TEST-only backfill scaffold for a small `pilot/` prefix. The implementation is intentionally dry-run by default and does not perform any live Wasabi writes, copies, deletes, or IAM changes. Use the owner-approved TEST source bucket and the Singapore derived bucket only.
+The local batch CLI defaults to a read-only metadata dry-run: it lists only the explicitly selected TEST source prefix and checks eligible objects' derived-object metadata. It does not fetch source bodies, write derived objects, create/update checkpoints, or acquire the persistent writer lock. It requires an explicit source bucket, source region, `pilot/` (or narrower) prefix, and a maximum of 1-10 objects.
 
 ```powershell
-# Dry-run first; no source GET or derived PUT.
-npm run thumbnail:backfill:test -- --source-bucket "<test-source-bucket>" --source-region "ap-southeast-2" --prefix "pilot/" --max-objects 10 --checkpoint "C:\temp\wasabi-thumbnail-backfill.json"
-
-# Owner-approved live TEST run only after both flags are explicitly present.
-npm run thumbnail:backfill:test -- --source-bucket "<test-source-bucket>" --source-region "ap-southeast-2" --prefix "pilot/" --max-objects 10 --checkpoint "C:\temp\wasabi-thumbnail-backfill.json" --execute --confirm-test-backfill
+npm run thumbnail:backfill:test -- --source-bucket "<configured-test-source-bucket>" --source-region "ap-southeast-2" --prefix "pilot/" --max-objects 10
 ```
 
-The checkpoint file must live outside the Git working tree and remains sensitive because it stores the last completed source key for a TEST prefix. If a run fails after a successful `PUT` but before checkpoint update, a rerun should encounter `already-present` and continue without overwriting. The owner must manually grant source `s3:ListBucket` scoped to the TEST bucket with `s3:prefix` limited to `pilot/`, plus trusted GetObject on `pilot/*`, and the approved Singapore derived bucket permissions. Do not change IAM resources from the repository.
+Live writes are **owner-only**, limited to the configured TEST source and the configured private derived bucket in Singapore (`ap-southeast-1`). A live invocation must use an absolute checkpoint path outside the Git working tree and include both confirmation flags. The checkpoint stores the last fully completed source key and must be treated as sensitive. Each terminal object result is checkpointed atomically; on ambiguous post-PUT interruption, rerunning from the prior cursor is intended to safely encounter `already-present`. Never remove or replace a stale lock unless the owner has confirmed no process is active.
+
+```powershell
+npm run thumbnail:backfill:test -- --source-bucket "<configured-test-source-bucket>" --source-region "ap-southeast-2" --prefix "pilot/" --max-objects 10 --checkpoint "C:\private\wasabi-thumbnail-backfill.json" --execute --confirm-test-backfill
+```
+
+The owner must manually grant `s3:ListBucket` only on the approved TEST source bucket, constrained by `s3:prefix` to `pilot/`, retain source GetObject only on `pilot/*`, and grant the needed HEAD/conditional PUT permissions only to the approved Singapore derived bucket. Do not change IAM from this repository. Each invocation examines at most 10 objects. The listing is a moving view, not a snapshot; keys added or changed lexicographically before the saved cursor require a deliberate new scan from the beginning after the current scan completes.
+
+Before any live batch, the owner must verify `ListObjectsV2 StartAfter` behavior and strict key ordering against disposable TEST objects. This behavior has not been demonstrated against Wasabi by these tests; if the provider does not honor the cursor as expected, stop rather than relying on resume guarantees.
+
+Wasabi Support reports its conditional-write fix has rolled out in Singapore but not fully in Sydney. The B1 TEST pilot and conditional-create rerun were validated with the derived bucket in Singapore; Sydney conditional PUT continued to overwrite during the owner's retest. This is provider/region-specific evidence, not a guarantee for other regions or future deployments. Keep B2-A derived writes pinned to `ap-southeast-1`, and preserve conditional source `IfMatch` and derived `IfNoneMatch: "*"` behavior.
 
 ## Phase 8 Task 8C-A1 — Recorded findings (October 2026)
 
@@ -220,6 +226,6 @@ An explicitly approved live one-object operation requires both confirmation flag
 npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region> --execute --confirm-test-write
 ```
 
-The pilot checks the deterministic destination key before any source-body download, rejects known oversized objects, and enforces a 25 MiB source stream limit. Source GetObject uses `IfMatch` and checks the returned ETag and size; derived PutObject uses `IfNoneMatch: "*"`. It never falls back to unconditional reads or writes. Actual Wasabi compatibility for both conditional operations still requires owner-led verification on controlled TEST buckets before live use.
+The pilot checks the deterministic destination key before any source-body download, rejects known oversized objects, and enforces a 25 MiB source stream limit. Source GetObject uses `IfMatch` and checks the returned ETag and size; derived PutObject uses `IfNoneMatch: "*"`. It never falls back to unconditional reads or writes. The owner validated conditional source reads in Sydney and conditional derived creation in Singapore for the B1 TEST pilot. Wasabi's fix rollout remains region-specific as noted above; verify the exact TEST destination before any additional live use.
 
 B1 does not authorize production writes or a backfill, and adds no SNS processing, Lambda worker, API/frontend changes, or cloud resources.

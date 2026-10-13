@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { randomBytes } = require("node:crypto");
 const { evaluateThumbnailEligibility } = require("./eligibility");
 const { generateThumbnailForObject } = require("./generate");
 const { normalizeEtag } = require("./key");
@@ -8,70 +9,89 @@ const { MAX_SOURCE_BYTES, validateWasabiRegion } = require("../storage/thumbnail
 const DEFAULT_MAX_OBJECTS = 10;
 const DEFAULT_PAGE_SIZE = 5;
 const CHECKPOINT_SCHEMA_VERSION = 1;
-const REPO_ROOT = path.resolve(__dirname, "..");
+const REPO_ROOT = path.resolve(__dirname, "..", "..");
+const TERMINAL_CATEGORIES = new Set(["generated", "already-present", "unsupported", "oversize"]);
+const TEST_BUCKET_PATTERN = /(^|[-_.])test([-_.]|$)/i;
+const PRODUCTION_BUCKET_PATTERN = /(^|[-_.])(prod|prd|production)([-_.]|$)/i;
 
 const normalizePrefix = (prefix) => {
-  if (typeof prefix !== "string") {
+  if (typeof prefix !== "string" || !prefix.trim()) {
     throw new Error("invalid-prefix");
   }
-  const trimmed = prefix.trim();
-  if (!trimmed) {
-    throw new Error("invalid-prefix");
-  }
-  if (trimmed === "pilot") {
-    return "pilot/";
-  }
-  if (!trimmed.startsWith("pilot/")) {
-    throw new Error("invalid-prefix");
-  }
-  const normalized = trimmed.replace(/\\+/g, "/");
-  if (normalized.includes("//") || normalized.includes("..")) {
+  const normalized = prefix.trim();
+  if (
+    !normalized.startsWith("pilot/")
+    || normalized.includes("\\")
+    || normalized.includes("//")
+    || normalized.split("/").some((part) => part === "." || part === "..")
+  ) {
     throw new Error("invalid-prefix");
   }
   return normalized;
 };
 
-const isTerminatingCategory = (category) => new Set([
-  "generated",
-  "already-present",
-  "unsupported",
-  "oversize",
-  "dry-run",
-]).has(category);
-
 const validateScope = ({ sourceBucket, sourceRegion, prefix, destinationBucket, destinationRegion }) => {
-  if (typeof sourceBucket !== "string" || !sourceBucket.trim()) {
+  if (
+    typeof sourceBucket !== "string"
+    || !sourceBucket.trim()
+    || !TEST_BUCKET_PATTERN.test(sourceBucket)
+    || PRODUCTION_BUCKET_PATTERN.test(sourceBucket)
+  ) {
     throw new Error("invalid-source-bucket");
   }
-  if (typeof sourceRegion !== "string" || !sourceRegion.trim()) {
-    throw new Error("invalid-source-region");
-  }
-  if (typeof prefix !== "string" || !prefix.trim()) {
-    throw new Error("invalid-prefix");
-  }
-  if (typeof destinationBucket !== "string" || !destinationBucket.trim()) {
+  if (
+    typeof destinationBucket !== "string"
+    || !destinationBucket.trim()
+    || !TEST_BUCKET_PATTERN.test(destinationBucket)
+    || PRODUCTION_BUCKET_PATTERN.test(destinationBucket)
+    || sourceBucket === destinationBucket
+  ) {
     throw new Error("invalid-destination-bucket");
-  }
-  if (typeof destinationRegion !== "string" || !destinationRegion.trim()) {
-    throw new Error("invalid-destination-region");
   }
   validateWasabiRegion(sourceRegion);
   validateWasabiRegion(destinationRegion);
+  if (destinationRegion !== "ap-southeast-1") {
+    throw new Error("invalid-destination-region");
+  }
   return {
     sourceBucket: sourceBucket.trim(),
-    sourceRegion: sourceRegion.trim(),
+    sourceRegion,
     prefix: normalizePrefix(prefix),
     destinationBucket: destinationBucket.trim(),
-    destinationRegion: destinationRegion.trim(),
+    destinationRegion,
   };
+};
+
+const canonicalPath = (targetPath) => {
+  let existingPath = path.resolve(targetPath);
+  const missingParts = [];
+  while (!fs.existsSync(existingPath)) {
+    const parent = path.dirname(existingPath);
+    if (parent === existingPath) {
+      throw new Error("invalid-checkpoint-path");
+    }
+    missingParts.unshift(path.basename(existingPath));
+    existingPath = parent;
+  }
+  return path.resolve(fs.realpathSync(existingPath), ...missingParts);
 };
 
 const checkpointPathIsOutsideRepo = (checkpointPath) => {
   if (typeof checkpointPath !== "string" || !checkpointPath.trim()) {
     return false;
   }
-  const resolved = path.resolve(checkpointPath);
-  return resolved !== REPO_ROOT && !resolved.startsWith(`${REPO_ROOT}${path.sep}`);
+  let resolved;
+  let repositoryRoot;
+  try {
+    resolved = canonicalPath(checkpointPath);
+    repositoryRoot = fs.realpathSync(REPO_ROOT);
+  } catch {
+    return false;
+  }
+  const relative = path.relative(repositoryRoot, resolved);
+  return relative === ".."
+    || relative.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relative);
 };
 
 const buildCheckpoint = ({ scope, lastCompletedKey }) => ({
@@ -81,51 +101,116 @@ const buildCheckpoint = ({ scope, lastCompletedKey }) => ({
 });
 
 const readCheckpoint = (checkpointPath, scope) => {
-  if (!checkpointPath || !fs.existsSync(checkpointPath)) {
-    return null;
-  }
-  const raw = fs.readFileSync(checkpointPath, "utf8");
   let parsed;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(fs.readFileSync(checkpointPath, "utf8"));
   } catch {
     throw new Error("invalid-checkpoint");
   }
 
-  if (!parsed || typeof parsed !== "object") {
+  if (
+    !parsed
+    || typeof parsed !== "object"
+    || Array.isArray(parsed)
+    || Object.keys(parsed).sort().join(",") !== "lastCompletedKey,scope,version"
+  ) {
     throw new Error("invalid-checkpoint");
   }
   if (parsed.version !== CHECKPOINT_SCHEMA_VERSION) {
     throw new Error("checkpoint-version-mismatch");
   }
-  if (typeof parsed.lastCompletedKey !== "string" && parsed.lastCompletedKey !== null) {
+  if (
+    typeof parsed.lastCompletedKey !== "string" && parsed.lastCompletedKey !== null
+  ) {
     throw new Error("invalid-checkpoint");
   }
-  if (!parsed.scope || typeof parsed.scope !== "object") {
+  if (
+    parsed.lastCompletedKey !== null
+    && !parsed.lastCompletedKey.startsWith(scope.prefix)
+  ) {
     throw new Error("invalid-checkpoint");
   }
-
-  if (JSON.stringify(parsed.scope) !== JSON.stringify(scope)) {
+  if (
+    !parsed.scope
+    || typeof parsed.scope !== "object"
+    || Array.isArray(parsed.scope)
+    || Object.keys(parsed.scope).sort().join(",")
+      !== "destinationBucket,destinationRegion,prefix,sourceBucket,sourceRegion"
+  ) {
+    throw new Error("invalid-checkpoint");
+  }
+  if (Object.keys(scope).some((key) => parsed.scope[key] !== scope[key])) {
     throw new Error("checkpoint-scope-mismatch");
   }
   return parsed;
 };
 
+const checkpointFileExists = (checkpointPath) => {
+  try {
+    const metadata = fs.lstatSync(checkpointPath);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new Error("invalid-checkpoint");
+    }
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return false;
+    }
+    throw new Error("invalid-checkpoint");
+  }
+};
+
 const writeCheckpointAtomically = (checkpointPath, checkpoint) => {
   const directory = path.dirname(checkpointPath);
-  fs.mkdirSync(directory, { recursive: true });
-  const tempPath = `${checkpointPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  fs.writeFileSync(tempPath, `${JSON.stringify(checkpoint, null, 2)}\n`, "utf8");
-  fs.renameSync(tempPath, checkpointPath);
+  let temporaryPath;
+  let descriptor;
+  try {
+    fs.mkdirSync(directory, { recursive: true });
+    temporaryPath = `${checkpointPath}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
+    descriptor = fs.openSync(temporaryPath, "wx", 0o600);
+    fs.writeFileSync(descriptor, `${JSON.stringify(checkpoint, null, 2)}\n`, "utf8");
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.renameSync(temporaryPath, checkpointPath);
+  } catch {
+    if (typeof descriptor === "number") {
+      try {
+        fs.closeSync(descriptor);
+      } catch {
+        // The write failure remains authoritative.
+      }
+    }
+    if (temporaryPath) {
+      try {
+        fs.unlinkSync(temporaryPath);
+      } catch (error) {
+        if (error.code !== "ENOENT") {
+          throw new Error("checkpoint-cleanup-failed");
+        }
+      }
+    }
+    throw new Error("checkpoint-write-failed");
+  }
 };
 
 const acquireLock = (checkpointPath) => {
   const lockPath = `${checkpointPath}.lock`;
   try {
-    const fd = fs.openSync(lockPath, "wx", 0o600);
-    return { fd, lockPath };
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   } catch {
-    throw new Error("lock-already-held");
+    throw new Error("lock-directory-unavailable");
+  }
+
+  try {
+    const fd = fs.openSync(lockPath, "wx", 0o600);
+    const identity = fs.fstatSync(fd);
+    return { fd, lockPath, dev: identity.dev, ino: identity.ino };
+  } catch (error) {
+    if (error.code === "EEXIST") {
+      throw new Error("lock-already-held");
+    }
+    throw new Error("lock-acquisition-failed");
   }
 };
 
@@ -135,89 +220,106 @@ const releaseLock = (lock) => {
   }
   fs.closeSync(lock.fd);
   try {
+    const current = fs.lstatSync(lock.lockPath);
+    if (current.dev !== lock.dev || current.ino !== lock.ino) {
+      throw new Error("lock-ownership-lost");
+    }
     fs.unlinkSync(lock.lockPath);
-  } catch {
-    // Ignore stale lock cleanup errors; do not remove another process's lock.
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw new Error("lock-release-failed");
+    }
   }
 };
 
-const ensureOrderedPage = ({ page, prefix, startAfter }) => {
-  const contents = Array.isArray(page?.Contents) ? page.Contents : [];
-  if (contents.some((object) => typeof object?.Key !== "string" || !object.Key.trim())) {
+const ensureOrderedPage = ({ page, prefix, startAfter, maxKeys }) => {
+  if (!page || typeof page !== "object" || typeof page.IsTruncated !== "boolean") {
+    throw new Error("invalid-list-page");
+  }
+  if (page.Contents !== undefined && !Array.isArray(page.Contents)) {
+    throw new Error("invalid-list-page");
+  }
+  const contents = page.Contents ?? [];
+  if (contents.length > maxKeys) {
+    throw new Error("invalid-list-page");
+  }
+  const keys = contents.map((object) => object?.Key);
+  if (keys.some((key) => typeof key !== "string" || !key.trim())) {
     throw new Error("invalid-page-contents");
   }
-  const keys = contents.map((object) => object.Key);
-  for (const key of keys) {
-    if (!key.startsWith(prefix)) {
+  for (let index = 0; index < keys.length; index += 1) {
+    if (!keys[index].startsWith(prefix)) {
       throw new Error("invalid-page-key");
     }
-  }
-  for (let index = 1; index < keys.length; index += 1) {
-    if (keys[index] <= keys[index - 1]) {
+    if (index > 0 && keys[index] <= keys[index - 1]) {
+      throw new Error("page-order-mismatch");
+    }
+    if (typeof startAfter === "string" && keys[index] <= startAfter) {
       throw new Error("page-order-mismatch");
     }
   }
-  if (typeof startAfter === "string" && keys.length > 0 && keys[0] <= startAfter) {
-    throw new Error("page-order-mismatch");
+  if (page.IsTruncated && contents.length === 0) {
+    throw new Error("invalid-list-page");
   }
   return contents;
 };
 
-const classifyListObject = ({
+const extensionFromKey = (key) => {
+  const basename = key.slice(key.lastIndexOf("/") + 1);
+  const dotIndex = basename.lastIndexOf(".");
+  return dotIndex >= 0 && dotIndex < basename.length - 1
+    ? basename.slice(dotIndex + 1).toLowerCase()
+    : "";
+};
+
+const classifyListObject = async ({
   sourceBucket,
   sourceRegion,
   prefix,
   object,
-  generate,
+  generate = generateThumbnailForObject,
   dryRun,
   destinationBucket,
   destinationRegion,
   storage,
 }) => {
   const key = object?.Key;
-  if (typeof key !== "string" || !key.trim()) {
-    return { category: "failed", reason: "invalid-key" };
+  if (typeof key !== "string" || !key.trim() || !key.startsWith(prefix)) {
+    return { category: "failed", count: 1, reason: "invalid-key" };
   }
   if (key.endsWith("/")) {
-    return { category: "unsupported", reason: "folder-marker" };
-  }
-  if (!key.startsWith(prefix)) {
-    return { category: "failed", reason: "out-of-scope-key" };
+    return { category: "unsupported", count: 1, reason: "folder-marker" };
   }
 
-  const size = Number.isFinite(object.Size) ? Number(object.Size) : NaN;
+  const size = object.Size;
   if (!Number.isSafeInteger(size) || size < 0) {
-    return { category: "failed", reason: "invalid-object-size" };
+    return { category: "failed", count: 1, reason: "invalid-object-size" };
   }
   if (size === 0) {
-    return { category: "unsupported", reason: "zero-byte-object" };
+    return { category: "unsupported", count: 1, reason: "zero-byte-object" };
   }
   if (size > MAX_SOURCE_BYTES) {
-    return { category: "oversize", reason: "source-too-large" };
+    return { category: "oversize", count: 1, reason: "source-too-large" };
   }
 
-  const etag = typeof object.ETag === "string" ? object.ETag : "";
-  if (!normalizeEtag(etag)) {
-    return { category: "failed", reason: "missing-source-etag" };
-  }
-
-  const basename = key.slice(key.lastIndexOf("/") + 1);
-  const extensionIndex = basename.lastIndexOf(".");
-  const extension = extensionIndex >= 0 && extensionIndex < basename.length - 1
-    ? basename.slice(extensionIndex + 1).toLowerCase()
-    : "";
-
+  const extension = extensionFromKey(key);
   const eligibility = evaluateThumbnailEligibility({
     size,
     extension,
     sourceKey: key,
     region: sourceRegion,
     bucket: sourceBucket,
-    etag,
+    etag: '"valid-etag"',
   });
-
   if (!eligibility.eligible) {
-    return { category: "unsupported", reason: eligibility.reason || "unsupported-format" };
+    return {
+      category: "unsupported",
+      count: 1,
+      reason: eligibility.reason || "unsupported-format",
+    };
+  }
+  if (typeof object.ETag !== "string" || !normalizeEtag(object.ETag)) {
+    return { category: "failed", count: 1, reason: "missing-source-etag" };
   }
 
   return generate({
@@ -230,6 +332,23 @@ const classifyListObject = ({
     dryRun,
   });
 };
+
+const emptySummary = (dryRun) => ({
+  category: dryRun ? "dry-run" : "completed",
+  examined: 0,
+  generated: 0,
+  alreadyPresent: 0,
+  unsupported: 0,
+  oversize: 0,
+  failed: 0,
+});
+
+const failSummary = (summary) => ({
+  ...summary,
+  category: "failed",
+  failed: summary.failed + 1,
+  stopReason: "failure",
+});
 
 const runBackfillScan = async ({
   sourceBucket,
@@ -261,131 +380,140 @@ const runBackfillScan = async ({
     destinationBucket,
     destinationRegion,
   });
-
-  const normalizedCheckpointPath = checkpointPath && typeof checkpointPath === "string"
-    ? path.resolve(checkpointPath)
-    : undefined;
-
-  if (!dryRun && (!normalizedCheckpointPath || !checkpointPathIsOutsideRepo(normalizedCheckpointPath))) {
+  const resolvedCheckpointPath = checkpointPath ? path.resolve(checkpointPath) : undefined;
+  if (!dryRun && (
+    !resolvedCheckpointPath
+    || !path.isAbsolute(checkpointPath)
+    || !checkpointPathIsOutsideRepo(resolvedCheckpointPath)
+  )) {
+    throw new Error("invalid-checkpoint-path");
+  }
+  if (dryRun && checkpointPath && !checkpointPathIsOutsideRepo(resolvedCheckpointPath)) {
     throw new Error("invalid-checkpoint-path");
   }
 
-  let checkpointState = null;
-  if (!dryRun && normalizedCheckpointPath && fs.existsSync(normalizedCheckpointPath)) {
-    checkpointState = readCheckpoint(normalizedCheckpointPath, scope);
-  }
-  if (!dryRun && checkpointState === null && normalizedCheckpointPath) {
-    checkpointState = buildCheckpoint({ scope, lastCompletedKey: null });
-  }
-
-  let lastCompletedKey = checkpointState?.lastCompletedKey ?? null;
-  let lockHandle = null;
-  if (!dryRun && normalizedCheckpointPath) {
-    lockHandle = acquireLock(normalizedCheckpointPath);
-  }
-
+  let lock;
+  const summary = emptySummary(dryRun);
   try {
-    const summary = {
-      category: dryRun ? "dry-run" : "completed",
-      examined: 0,
-      generated: 0,
-      alreadyPresent: 0,
-      unsupported: 0,
-      oversize: 0,
-      failed: 0,
-      pausedCap: 0,
-    };
+    let lastCompletedKey = null;
+    if (!dryRun) {
+      lock = acquireLock(resolvedCheckpointPath);
+      if (checkpointFileExists(resolvedCheckpointPath)) {
+        lastCompletedKey = readCheckpoint(resolvedCheckpointPath, scope).lastCompletedKey;
+      }
+    }
 
-    let startAfter = lastCompletedKey || undefined;
-    let remaining = maxObjects;
+    let startAfter = lastCompletedKey ?? undefined;
+    while (summary.examined < maxObjects) {
+      const remaining = maxObjects - summary.examined;
+      let page;
+      try {
+        page = await storage.listSourcePage({
+          bucket: scope.sourceBucket,
+          region: scope.sourceRegion,
+          prefix: scope.prefix,
+          maxKeys: Math.min(pageSize, remaining),
+          startAfter,
+        });
+      } catch {
+        return failSummary(summary);
+      }
 
-    while (remaining > 0) {
-      const effectivePageSize = Math.min(pageSize, remaining);
-      const page = await storage.listSourcePage({
-        bucket: scope.sourceBucket,
-        region: scope.sourceRegion,
-        prefix: scope.prefix,
-        maxKeys: effectivePageSize,
-        startAfter,
-      });
-      const contents = ensureOrderedPage({ page, prefix: scope.prefix, startAfter });
-
+      let contents;
+      try {
+        contents = ensureOrderedPage({
+          page,
+          prefix: scope.prefix,
+          startAfter,
+          maxKeys: Math.min(pageSize, maxObjects - summary.examined),
+        });
+      } catch {
+        return failSummary(summary);
+      }
       if (contents.length === 0) {
-        break;
+        return summary;
       }
 
       for (const object of contents) {
         if (summary.examined >= maxObjects) {
           break;
         }
-
-        const result = classifyListObject({
-          sourceBucket: scope.sourceBucket,
-          sourceRegion: scope.sourceRegion,
-          prefix: scope.prefix,
-          object,
-          generate,
-          dryRun,
-          destinationBucket: scope.destinationBucket,
-          destinationRegion: scope.destinationRegion,
-          storage,
-        });
-
         summary.examined += 1;
 
-        if (result.category === "generated") {
+        let result;
+        try {
+          result = await classifyListObject({
+            sourceBucket: scope.sourceBucket,
+            sourceRegion: scope.sourceRegion,
+            prefix: scope.prefix,
+            object,
+            generate,
+            dryRun,
+            destinationBucket: scope.destinationBucket,
+            destinationRegion: scope.destinationRegion,
+            storage,
+          });
+        } catch {
+          return failSummary(summary);
+        }
+
+        const category = result?.category;
+        const knownTerminal = TERMINAL_CATEGORIES.has(category)
+          || (dryRun && category === "dry-run");
+        if (
+          !result
+          || typeof result !== "object"
+          || Array.isArray(result)
+          || result.count !== 1
+          || !knownTerminal
+        ) {
+          return failSummary(summary);
+        }
+        if (dryRun && category === "generated") {
+          return failSummary(summary);
+        }
+
+        if (category === "generated") {
           summary.generated += 1;
-        } else if (result.category === "already-present") {
+        } else if (category === "already-present") {
           summary.alreadyPresent += 1;
-        } else if (result.category === "unsupported") {
+        } else if (category === "unsupported") {
           summary.unsupported += 1;
-        } else if (result.category === "oversize") {
+        } else if (category === "oversize") {
           summary.oversize += 1;
-        } else if (["failed", "etag-mismatch", "precondition-unsupported"].includes(result.category)) {
-          summary.failed += 1;
-          summary.category = "failed";
-          return { ...summary, stopReason: result.reason || result.category };
         }
 
-        if (!dryRun && isTerminatingCategory(result.category)) {
-          lastCompletedKey = object.Key;
-          writeCheckpointAtomically(normalizedCheckpointPath, buildCheckpoint({
-            scope,
-            lastCompletedKey,
-          }));
+        if (!dryRun) {
+          try {
+            lastCompletedKey = object.Key;
+            writeCheckpointAtomically(resolvedCheckpointPath, buildCheckpoint({
+              scope,
+              lastCompletedKey,
+            }));
+          } catch {
+            return failSummary(summary);
+          }
         }
-
-        if (summary.examined >= maxObjects) {
-          summary.pausedCap = 1;
-          summary.category = "paused-cap";
-          break;
-        }
-
         startAfter = object.Key;
-        remaining -= 1;
       }
 
       if (summary.examined >= maxObjects) {
-        break;
+        if (page.IsTruncated) {
+          summary.category = "paused-cap";
+        }
+        return summary;
       }
       if (!page.IsTruncated) {
-        break;
+        return summary;
       }
-      startAfter = contents[contents.length - 1].Key;
-      remaining = Math.max(0, maxObjects - summary.examined);
+      startAfter = lastCompletedKey ?? startAfter;
     }
-
-    if (!dryRun && normalizedCheckpointPath && summary.category !== "failed") {
-      writeCheckpointAtomically(normalizedCheckpointPath, buildCheckpoint({
-        scope,
-        lastCompletedKey,
-      }));
-    }
-
     return summary;
+  } catch {
+    return failSummary(summary);
   } finally {
-    if (lockHandle) {
-      releaseLock(lockHandle);
+    if (lock) {
+      releaseLock(lock);
     }
   }
 };
@@ -404,4 +532,5 @@ module.exports = {
   releaseLock,
   runBackfillScan,
   validateScope,
+  writeCheckpointAtomically,
 };

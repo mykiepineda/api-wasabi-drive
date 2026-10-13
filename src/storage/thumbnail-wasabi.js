@@ -1,6 +1,7 @@
 const {
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } = require("@aws-sdk/client-s3");
@@ -187,6 +188,20 @@ const createThumbnailWasabiStorage = ({
         }
         throw error;
       }
+    },
+
+    async listSourcePage({ bucket, region, prefix, maxKeys, startAfter }) {
+      const safePrefix = typeof prefix === "string" ? prefix : "";
+      const safeLimit = Number.isInteger(maxKeys) ? Math.max(1, Math.min(maxKeys, 10)) : 10;
+      const params = {
+        Bucket: bucket,
+        Prefix: safePrefix,
+        MaxKeys: safeLimit,
+      };
+      if (typeof startAfter === "string" && startAfter.trim()) {
+        params.StartAfter = startAfter;
+      }
+      return send(region, new ListObjectsV2Command(params), "list-source-page");
     },
 
     async getSourceBuffer({

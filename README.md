@@ -72,6 +72,20 @@ Locate the largest photo/image objects:
 npm run locate:images -- --bucket <bucket-1> --bucket <bucket-2> --largest 10
 ```
 
+## Phase 8C-B2-A TEST backfill (owner-run only)
+
+This repository contains a guarded local TEST-only backfill scaffold for a small `pilot/` prefix. The implementation is intentionally dry-run by default and does not perform any live Wasabi writes, copies, deletes, or IAM changes. Use the owner-approved TEST source bucket and the Singapore derived bucket only.
+
+```powershell
+# Dry-run first; no source GET or derived PUT.
+npm run thumbnail:backfill:test -- --source-bucket "<test-source-bucket>" --source-region "ap-southeast-2" --prefix "pilot/" --max-objects 10 --checkpoint "C:\temp\wasabi-thumbnail-backfill.json"
+
+# Owner-approved live TEST run only after both flags are explicitly present.
+npm run thumbnail:backfill:test -- --source-bucket "<test-source-bucket>" --source-region "ap-southeast-2" --prefix "pilot/" --max-objects 10 --checkpoint "C:\temp\wasabi-thumbnail-backfill.json" --execute --confirm-test-backfill
+```
+
+The checkpoint file must live outside the Git working tree and remains sensitive because it stores the last completed source key for a TEST prefix. If a run fails after a successful `PUT` but before checkpoint update, a rerun should encounter `already-present` and continue without overwriting. The owner must manually grant source `s3:ListBucket` scoped to the TEST bucket with `s3:prefix` limited to `pilot/`, plus trusted GetObject on `pilot/*`, and the approved Singapore derived bucket permissions. Do not change IAM resources from the repository.
+
 ## Phase 8 Task 8C-A1 — Recorded findings (October 2026)
 
 The following findings summarize local, read-only inventory across **nine** existing source buckets and representative **local** thumbnail experiments. Figures are aggregate or anonymized: no private bucket names, full object keys, personal filenames, credentials, or photo samples are included. These are measurements and prototype results, **not** confirmation that production thumbnail generation is implemented.

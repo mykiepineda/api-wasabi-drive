@@ -26,7 +26,7 @@ Wasabi Drive is the owner's working personal application and a cloud engineering
 ## Provider-specific findings - do not regress
 
 - TEST source conditional `GetObject IfMatch` passed against Wasabi Sydney.
-- **Wasabi Sydney `PutObject IfNoneMatch: "*"` is NOT safe to rely on:** the provider accepted a second conditional write that replaced an existing object; Wasabi Support reproduced the issue (case 00307622), and its engineering team is investigating.
+- **Wasabi Sydney `PutObject IfNoneMatch: "*"` remains unsafe for this project:** sequential requests overwrote an existing object in the owner's direct retest. In Case 00307622, Wasabi Support confirmed a staged conditional-write fix is deployed in Singapore but **not yet fully across Sydney endpoints**, and asked for later follow-up. Do not infer Sydney is fixed until owner revalidation succeeds.
 - Amazon S3 correctly rejected the comparison overwrite; Wasabi `us-east-1` was reported working by Support.
 - **A TEST derived bucket physically created in Singapore (`ap-southeast-1`) passed:** its second conditional PUT returned `PreconditionFailed`, and SHA-256 verification confirmed the first object's bytes remained intact. B1 real TEST thumbnail generation and rerun also succeeded against that bucket.
 - B2-A live execution is permitted ONLY with the approved TEST destination configured as `ap-southeast-1`. Do not select Sydney as the derived write region or weaken `IfNoneMatch`, the source `IfMatch`, or destination HEAD behavior. Do not implement the cancelled B1-R non-atomic workaround.
@@ -44,6 +44,13 @@ Wasabi Drive is the owner's working personal application and a cloud engineering
 8. Keep CLI output to aggregate sanitized counts/categories/exit status. No object keys, filenames, bucket names, ETags, credentials, paths, presigned URLs, exception stacks, personal metadata, or checkpoint contents in logs, tests, README evidence, or commits. No live operations in tests.
 9. Unit-test paging, `StartAfter`/order validation, resume mid-batch and after crash, scope mismatch/corruption, safe dry-run, existing-thumbnail skip, terminal unsupported/oversize handling, transient failure stop, CLI flags/stage guards, locks, checkpoint atomicity/failure, and API import isolation. Tests should use injected mocked Wasabi clients and temporary local files only.
 10. Preserve tests and keep the change proportional. B2-A must not change existing APIs, authorization, Serverless deployment, GitHub Actions, frontend, thumbnails key/transform, source region discovery, or dependency versions without owner approval.
+
+## B2-A operational reliability acceptance gates
+
+- Await completion of each eligible object's asynchronous thumbnail generation before incrementing result counters, processing the next key, or updating the checkpoint. Unknown/rejected/ambiguous results fail closed with no checkpoint advancement.
+- Keep local checkpoints **outside the actual Git repository root**. Exclusive locking must work on first use of an external path, reject a competing writer, and never silently clear stale locks.
+- B2-A must have dedicated automated tests covering deferred promises, safe sequential processing, counts, pagination/resume, lock/atomic checkpoint lifecycle, TEST-only CLI flags, sanitized output, and list adapter scoping; existing B1 tests alone are insufficient.
+- The B1 `thumbnail:pilot` first-write command has intermittently returned without final JSON despite creating a private thumbnail. This remains a separate unresolved lifecycle/acknowledgement question; investigate using a focused B1 fix branch from `master`. B2-A must not claim a successful write or advance its checkpoint on an unconfirmed outcome.
 
 ## Validation and handoff
 

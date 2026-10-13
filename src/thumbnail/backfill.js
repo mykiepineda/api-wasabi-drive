@@ -1,4 +1,5 @@
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { randomBytes } = require("node:crypto");
 const { evaluateThumbnailEligibility } = require("./eligibility");
@@ -9,6 +10,7 @@ const { MAX_SOURCE_BYTES, validateWasabiRegion } = require("../storage/thumbnail
 const DEFAULT_MAX_OBJECTS = 10;
 const DEFAULT_PAGE_SIZE = 5;
 const CHECKPOINT_SCHEMA_VERSION = 1;
+const LOCAL_WRITER_LOCK_PATH = path.join(os.tmpdir(), "wasabi-drive-thumbnail-backfill-test.lock");
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const TERMINAL_CATEGORIES = new Set(["generated", "already-present", "unsupported", "oversize"]);
 const TEST_BUCKET_PATTERN = /(^|[-_.])test([-_.]|$)/i;
@@ -194,8 +196,8 @@ const writeCheckpointAtomically = (checkpointPath, checkpoint) => {
   }
 };
 
-const acquireLock = (checkpointPath) => {
-  const lockPath = `${checkpointPath}.lock`;
+const acquireLock = () => {
+  const lockPath = LOCAL_WRITER_LOCK_PATH;
   try {
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   } catch {
@@ -397,7 +399,7 @@ const runBackfillScan = async ({
   try {
     let lastCompletedKey = null;
     if (!dryRun) {
-      lock = acquireLock(resolvedCheckpointPath);
+      lock = acquireLock();
       if (checkpointFileExists(resolvedCheckpointPath)) {
         lastCompletedKey = readCheckpoint(resolvedCheckpointPath, scope).lastCompletedKey;
       }
@@ -522,6 +524,7 @@ module.exports = {
   CHECKPOINT_SCHEMA_VERSION,
   DEFAULT_MAX_OBJECTS,
   DEFAULT_PAGE_SIZE,
+  LOCAL_WRITER_LOCK_PATH,
   acquireLock,
   buildCheckpoint,
   checkpointPathIsOutsideRepo,

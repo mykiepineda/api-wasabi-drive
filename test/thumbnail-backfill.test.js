@@ -7,6 +7,7 @@ const {
   acquireLock,
   buildCheckpoint,
   checkpointPathIsOutsideRepo,
+  LOCAL_WRITER_LOCK_PATH,
   runBackfillScan,
 } = require("../src/thumbnail/backfill");
 
@@ -195,6 +196,7 @@ test("dry-run examines at most ten sequentially and never invokes source-body or
   let bodyReads = 0;
   let derivedWrites = 0;
   const checkpointPath = path.join(temporaryDirectory(), "checkpoint.json");
+  const writerLockExisted = fs.existsSync(LOCAL_WRITER_LOCK_PATH);
   const { storage, calls } = storageWithPages([{
     Contents: Array.from({ length: 10 }, (_, index) => item(`pilot/${String(index).padStart(2, "0")}.jpg`)),
     IsTruncated: true,
@@ -227,6 +229,7 @@ test("dry-run examines at most ten sequentially and never invokes source-body or
   assert.equal(derivedWrites, 0);
   assert.equal(fs.existsSync(checkpointPath), false);
   assert.equal(fs.existsSync(`${checkpointPath}.lock`), false);
+  assert.equal(fs.existsSync(LOCAL_WRITER_LOCK_PATH), writerLockExisted);
   assert.equal(calls.length, 1);
 });
 
@@ -385,14 +388,73 @@ test("rejects repository paths but permits a nested external checkpoint on first
   assert.equal(fs.existsSync(checkpointPath), true);
 });
 
-test("exclusive locks reject contention and stale locks without taking them over", () => {
-  const checkpointPath = path.join(temporaryDirectory(), "new", "checkpoint.json");
-  const lock = acquireLock(checkpointPath);
-  assert.throws(() => acquireLock(checkpointPath), { message: "lock-already-held" });
-  fs.closeSync(lock.fd);
+test("different checkpoint files contend for the same live writer lock", async () => {
+  let releaseGeneration;
+  let firstStarted;
+  const started = new Promise((resolve) => {
+    firstStarted = resolve;
+  });
+  const firstCheckpoint = path.join(temporaryDirectory(), "first", "checkpoint.json");
+  const secondCheckpoint = path.join(temporaryDirectory(), "second", "checkpoint.json");
+  const firstRun = runBackfillScan({
+    ...scope,
+    storage: {
+      async listSourcePage() {
+        return { Contents: [item("pilot/a.jpg")], IsTruncated: false };
+      },
+    },
+    dryRun: false,
+    checkpointPath: firstCheckpoint,
+    generate: async () => {
+      firstStarted();
+      return new Promise((resolve) => {
+        releaseGeneration = resolve;
+      });
+    },
+  });
+
+  await started;
+  const secondListCalls = [];
+  const secondSummary = await runBackfillScan({
+    ...scope,
+    storage: {
+      async listSourcePage(params) {
+        secondListCalls.push(params);
+        return { Contents: [item("pilot/b.jpg")], IsTruncated: false };
+      },
+    },
+    dryRun: false,
+    checkpointPath: secondCheckpoint,
+    generate: async () => result("generated"),
+  });
+
+  try {
+    assert.equal(secondSummary.category, "failed");
+    assert.equal(secondSummary.failed, 1);
+    assert.equal(secondListCalls.length, 0);
+  } finally {
+    releaseGeneration(result("generated"));
+  }
+  const firstSummary = await firstRun;
+  assert.equal(firstSummary.generated, 1);
+  assert.equal(fs.existsSync(firstCheckpoint), true);
+  assert.equal(fs.existsSync(secondCheckpoint), false);
+});
+
+test("exclusive writer lock rejects contention and stale locks without taking them over", () => {
+  const lock = acquireLock();
+  try {
+    assert.throws(() => acquireLock(), { message: "lock-already-held" });
+  } finally {
+    fs.closeSync(lock.fd);
+  }
   fs.writeFileSync(lock.lockPath, "stale");
-  assert.throws(() => acquireLock(checkpointPath), { message: "lock-already-held" });
-  assert.equal(fs.readFileSync(lock.lockPath, "utf8"), "stale");
+  try {
+    assert.throws(() => acquireLock(), { message: "lock-already-held" });
+    assert.equal(fs.readFileSync(lock.lockPath, "utf8"), "stale");
+  } finally {
+    fs.unlinkSync(lock.lockPath);
+  }
 });
 
 test("rejects corrupt, stale-version, unexpected, and mismatched checkpoints and always releases lock", async (t) => {

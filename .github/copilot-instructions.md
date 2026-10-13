@@ -50,7 +50,6 @@ Wasabi Drive is the owner's working personal application and a cloud engineering
 - Await completion of each eligible object's asynchronous thumbnail generation before incrementing result counters, processing the next key, or updating the checkpoint. Unknown/rejected/ambiguous results fail closed with no checkpoint advancement.
 - Keep local checkpoints **outside the actual Git repository root**. Exclusive locking must work on first use of an external path, reject a competing writer, and never silently clear stale locks.
 - B2-A must have dedicated automated tests covering deferred promises, safe sequential processing, counts, pagination/resume, lock/atomic checkpoint lifecycle, TEST-only CLI flags, sanitized output, and list adapter scoping; existing B1 tests alone are insufficient.
-- The B1 `thumbnail:pilot` first-write command has intermittently returned without final JSON despite creating a private thumbnail. This remains a separate unresolved lifecycle/acknowledgement question; investigate using a focused B1 fix branch from `master`. B2-A must not claim a successful write or advance its checkpoint on an unconfirmed outcome.
 
 ## Validation and handoff
 

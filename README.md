@@ -88,9 +88,19 @@ npm run thumbnail:backfill:test -- --source-bucket "<configured-test-source-buck
 
 The owner must manually grant `s3:ListBucket` only on the approved TEST source bucket, constrained by `s3:prefix` to `pilot/`, retain source GetObject only on `pilot/*`, and grant the needed HEAD/conditional PUT permissions only to the approved Singapore derived bucket. Do not change IAM from this repository. Each invocation examines at most 10 objects. The listing is a moving view, not a snapshot; keys added or changed lexicographically before the saved cursor require a deliberate new scan from the beginning after the current scan completes.
 
-Before any live batch, the owner must verify `ListObjectsV2 StartAfter` behavior and strict key ordering against disposable TEST objects. This behavior has not been demonstrated against Wasabi by these tests; if the provider does not honor the cursor as expected, stop rather than relying on resume guarantees.
+The owner validated B2-A against TEST objects: source `ListObjectsV2 StartAfter` and strict listing order worked in Sydney, dry-run passed, checkpoint creation and resume worked, and a resumed two-object batch generated two private WebPs in Singapore.
 
-Wasabi Support reports its conditional-write fix has rolled out in Singapore but not fully in Sydney. The B1 TEST pilot and conditional-create rerun were validated with the derived bucket in Singapore; Sydney conditional PUT continued to overwrite during the owner's retest. This is provider/region-specific evidence, not a guarantee for other regions or future deployments. Keep B2-A derived writes pinned to `ap-southeast-1`, and preserve conditional source `IfMatch` and derived `IfNoneMatch: "*"` behavior.
+For Wasabi Support Case 00307622, Support reported the conditional-PUT fix deployed in Singapore, while the Sydney rollout remained incomplete at last confirmation. The owner independently reproduced a sequential overwrite in Sydney. Do not treat Sydney derived conditional PUT as production-safe; this is provider- and region-specific evidence.
+
+## Phase 8C-B2-B1 production metadata preflight (read-only)
+
+This local command lists metadata for exactly one owner-approved source bucket, region and nonempty prefix configured to match the command arguments. It uses dedicated audit credentials with `s3:ListBucket` restricted to that bucket and prefix. Set `THUMBNAIL_PRD_PREFLIGHT_SOURCE_BUCKET`, `THUMBNAIL_PRD_PREFLIGHT_SOURCE_REGION`, `THUMBNAIL_PRD_PREFLIGHT_SOURCE_PREFIX`, `THUMBNAIL_PRD_PREFLIGHT_WASABI_ACCESS_KEY_ID`, and `THUMBNAIL_PRD_PREFLIGHT_WASABI_SECRET_ACCESS_KEY` in the local environment; it does not fall back to API, TEST, AWS profile, or deployment credentials.
+
+```powershell
+npm run thumbnail:preflight:prd -- --source-bucket "<owner-approved-source-bucket>" --source-region "<owner-approved-region>" --prefix "<owner-approved-prefix>/" --max-objects 100
+```
+
+The page size is bounded (default 100; maximum 1000), and `--max-objects` is mandatory (maximum 1000). Output contains only aggregate object counts/bytes, eligibility categories, and `complete`/`capped`; the five primary categories account for every examined object and all examined bytes. `invalidEtag` is an independent quality counter that can overlap a primary category. `unsupported` means not currently eligible: besides unsupported formats and folder markers, it includes supported-format candidates with missing or invalid ETags when within the size limit. The oversized count means supported-format candidates above 25 MiB for this scan, not permanent unsupported status. Eligible CR2 counts are metadata-only preview candidates and do not establish that an object has a usable embedded JPEG. Provider errors are sanitized, and a capped sample is not a complete inventory. Although the command never prints object names, metadata listing can access real photo filenames, so use an appropriately scoped read-only credential and handle access accordingly. This command performs only source `ListObjectsV2`; it does not read object bodies, contact a derived bucket, or write checkpoints or objects. **PRODUCTION WRITES ARE NOT AUTHORIZED.**
 
 ## Phase 8 Task 8C-A1 — Recorded findings (October 2026)
 

@@ -236,13 +236,79 @@ test("scan paginates with bounded requests and classifies metadata into aggregat
     eligibleStandard: category(2, MAX_SOURCE_BYTES + 10),
     eligibleCr2: category(1, 20),
     oversized: category(1, MAX_SOURCE_BYTES + 1),
-    unsupported: category(1, 30),
+    unsupported: category(3, 70),
     zeroByte: category(1, 0),
     invalidEtag: category(4, MAX_SOURCE_BYTES + 71),
     complete: true,
     capped: false,
     cap: 10,
   });
+});
+
+test("multi-page classification applies primary-category precedence and reconciles counts and bytes", async () => {
+  const pages = [
+    {
+      IsTruncated: true,
+      NextContinuationToken: "second-page",
+      Contents: [
+        object("approved/00-marker/", 0, '"malformed'),
+        object("approved/01-video.mp4", MAX_SOURCE_BYTES + 1, null),
+        object("approved/02-deferred.nef", MAX_SOURCE_BYTES + 2),
+        object("approved/03-large.jpg", MAX_SOURCE_BYTES + 3, '"malformed'),
+      ],
+    },
+    {
+      IsTruncated: true,
+      NextContinuationToken: "third-page",
+      Contents: [
+        object("approved/04-large.CR2", MAX_SOURCE_BYTES + 4),
+        object("approved/05-folder/", 7, '"malformed'),
+        object("approved/06-missing.jpg", 11, null),
+        object("approved/07-malformed.jpg", 12, '"malformed'),
+      ],
+    },
+    {
+      IsTruncated: false,
+      Contents: [
+        object("approved/08-eligible.jpg", 13),
+        object("approved/09-eligible.CR2", 14),
+        object("approved/10-invalid.nef", 5, null),
+      ],
+    },
+  ];
+  const summary = await scanPreflight({
+    bucket: approved.sourceBucket,
+    region: approved.sourceRegion,
+    prefix: approved.sourcePrefix,
+    maxObjects: 20,
+    pageSize: 4,
+    listPage: async () => pages.shift(),
+  });
+
+  assert.deepEqual(summary, {
+    examined: 11,
+    eligibleStandard: category(1, 13),
+    eligibleCr2: category(1, 14),
+    oversized: category(2, 2 * MAX_SOURCE_BYTES + 7),
+    unsupported: category(6, 2 * MAX_SOURCE_BYTES + 38),
+    zeroByte: category(1, 0),
+    invalidEtag: category(7, 2 * MAX_SOURCE_BYTES + 39),
+    complete: true,
+    capped: false,
+    cap: 20,
+  });
+  const primary = [
+    summary.eligibleStandard,
+    summary.eligibleCr2,
+    summary.oversized,
+    summary.unsupported,
+    summary.zeroByte,
+  ];
+  assert.equal(primary.reduce((count, categorySummary) => count + categorySummary.count, 0), summary.examined);
+  assert.equal(
+    primary.reduce((bytes, categorySummary) => bytes + categorySummary.bytes, 0),
+    4 * MAX_SOURCE_BYTES + 72,
+  );
 });
 
 test("cap reports a partial sample; an exhausted listing at the exact cap is complete", async (t) => {
@@ -330,6 +396,18 @@ test("malformed listing pages, repeated tokens, ordering, or scope fail closed",
         };
       },
     }));
+  });
+  await t.test("combined primary byte total exceeding the safe integer range", async () => {
+    await assert.rejects(scanPreflight({
+      ...base,
+      listPage: async () => ({
+        IsTruncated: false,
+        Contents: [
+          object("approved/01.jpg", Number.MAX_SAFE_INTEGER),
+          object("approved/02.mp4", Number.MAX_SAFE_INTEGER),
+        ],
+      }),
+    }), /invalid-listing-size-total/);
   });
 });
 

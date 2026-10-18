@@ -76,6 +76,16 @@ const createSummary = () => ({
 });
 
 const incrementCategory = (summary, category, size) => {
+  if (category !== "invalidEtag") {
+    const primaryBytes = summary.eligibleStandard.bytes
+      + summary.eligibleCr2.bytes
+      + summary.oversized.bytes
+      + summary.unsupported.bytes
+      + summary.zeroByte.bytes;
+    if (!Number.isSafeInteger(primaryBytes + size)) {
+      throw new Error("invalid-listing-size-total");
+    }
+  }
   const nextBytes = summary[category].bytes + size;
   if (!Number.isSafeInteger(nextBytes)) {
     throw new Error("invalid-listing-size-total");
@@ -106,10 +116,6 @@ const classifyObject = (object, { bucket, region, prefix }, summary) => {
     incrementCategory(summary, "zeroByte", size);
     return;
   }
-  if (size > MAX_SOURCE_BYTES) {
-    incrementCategory(summary, "oversized", size);
-    return;
-  }
 
   const eligibility = evaluateThumbnailEligibility({
     size,
@@ -119,14 +125,23 @@ const classifyObject = (object, { bucket, region, prefix }, summary) => {
     bucket,
     etag: hasValidEtag ? object.ETag : "preflight-etag",
   });
-  if (eligibility.eligible && eligibility.category === "standard-image") {
-    if (hasValidEtag) {
-      incrementCategory(summary, "eligibleStandard", size);
-    }
-  } else if (eligibility.eligible && eligibility.category === "cr2-preview") {
-    if (hasValidEtag) {
-      incrementCategory(summary, "eligibleCr2", size);
-    }
+  // Primary-category precedence: zero-byte, ineligible, oversized, then eligible.
+  if (!eligibility.eligible) {
+    incrementCategory(summary, "unsupported", size);
+    return;
+  }
+  if (size > MAX_SOURCE_BYTES) {
+    incrementCategory(summary, "oversized", size);
+    return;
+  }
+  if (!hasValidEtag) {
+    incrementCategory(summary, "unsupported", size);
+    return;
+  }
+  if (eligibility.category === "standard-image") {
+    incrementCategory(summary, "eligibleStandard", size);
+  } else if (eligibility.category === "cr2-preview") {
+    incrementCategory(summary, "eligibleCr2", size);
   } else {
     incrementCategory(summary, "unsupported", size);
   }

@@ -6,23 +6,8 @@ const {
   S3Client,
 } = require("@aws-sdk/client-s3");
 const { normalizeEtag } = require("../thumbnail/key");
-
-const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
-const SUPPORTED_WASABI_REGIONS = new Set([
-  "us-east-1",
-  "us-east-2",
-  "us-central-1",
-  "us-west-1",
-  "ca-central-1",
-  "eu-central-1",
-  "eu-central-2",
-  "eu-west-1",
-  "eu-west-2",
-  "ap-northeast-1",
-  "ap-northeast-2",
-  "ap-southeast-1",
-  "ap-southeast-2",
-]);
+const { MAX_SOURCE_BYTES } = require("../thumbnail/policy");
+const { endpointForRegion, SUPPORTED_WASABI_REGIONS } = require("./wasabi-regions");
 
 class ThumbnailStorageError extends Error {
   constructor(code) {
@@ -38,10 +23,6 @@ const validateWasabiRegion = (region) => {
   }
   return region;
 };
-
-const endpointForRegion = (region) => region === "us-east-1"
-  ? "https://s3.wasabisys.com"
-  : `https://s3.${region}.wasabisys.com`;
 
 const getErrorCode = (error) => error?.Code || error?.code || error?.name;
 const getStatusCode = (error) => error?.$metadata?.httpStatusCode ?? error?.statusCode;

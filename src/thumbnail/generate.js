@@ -24,6 +24,8 @@ const generateThumbnailForObject = async ({
   storage,
   dryRun = true,
   applyPolicy = applyThumbnailPolicy,
+  expectedEtag,
+  expectedSize,
 }) => {
   if (
     typeof sourceBucket !== "string" || !sourceBucket
@@ -43,6 +45,16 @@ const generateThumbnailForObject = async ({
       region: sourceRegion,
     });
     const normalizedEtag = normalizeEtag(metadata?.etag);
+    if (
+      expectedEtag !== undefined
+      && (
+        !normalizeEtag(expectedEtag)
+        || normalizedEtag !== normalizeEtag(expectedEtag)
+        || metadata?.size !== expectedSize
+      )
+    ) {
+      return failure("failed", "etag-mismatch");
+    }
     const eligibility = evaluateThumbnailEligibility({
       size: metadata?.size,
       extension: extensionFromKey(sourceKey),

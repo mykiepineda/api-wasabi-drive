@@ -426,8 +426,12 @@ const acquireWriterLock = ({
   lockPath = LOCK_PATH,
   syncDirectoryImpl = syncDirectory,
   assertPrivatePathImpl = assertPrivatePath,
+  writeLockImpl = (descriptor, token) => fs.writeFileSync(descriptor, token, "utf8"),
+  fsyncLockImpl = (descriptor) => fs.fsyncSync(descriptor),
 } = {}) => {
   let descriptor;
+  let created = false;
+  let identity;
   try {
     const lockDirectory = path.dirname(lockPath);
     const directoryStat = fs.statSync(lockDirectory);
@@ -441,15 +445,45 @@ const acquireWriterLock = ({
       throw new Error("non-private-lock-directory");
     }
     descriptor = fs.openSync(lockPath, "wx", 0o600);
-    const identity = fs.fstatSync(descriptor);
+    created = true;
+    identity = fs.fstatSync(descriptor);
     const token = crypto.randomBytes(24).toString("hex");
-    fs.writeFileSync(descriptor, token, "utf8");
-    fs.fsyncSync(descriptor);
+    writeLockImpl(descriptor, token);
+    fsyncLockImpl(descriptor);
     syncDirectoryImpl(path.dirname(lockPath));
     return { descriptor, dev: identity.dev, ino: identity.ino, token, path: lockPath };
   } catch (error) {
-    if (descriptor !== undefined) fs.closeSync(descriptor);
-    if (error.code === "EEXIST") throw new Error("lock-already-held");
+    let cleanupFailed = false;
+    if (descriptor !== undefined) {
+      try {
+        fs.closeSync(descriptor);
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+    if (created) {
+      if (!identity) {
+        cleanupFailed = true;
+      } else {
+        try {
+          const current = fs.lstatSync(lockPath);
+          if (
+            current.isSymbolicLink()
+            || !current.isFile()
+            || current.dev !== identity.dev
+            || current.ino !== identity.ino
+          ) {
+            cleanupFailed = true;
+          } else {
+            fs.unlinkSync(lockPath);
+          }
+        } catch (cleanupError) {
+          if (cleanupError.code !== "ENOENT") cleanupFailed = true;
+        }
+      }
+    }
+    if (cleanupFailed) throw new Error("lock-cleanup-failed");
+    if (!created && error.code === "EEXIST") throw new Error("lock-already-held");
     throw new Error("lock-acquisition-failed");
   }
 };

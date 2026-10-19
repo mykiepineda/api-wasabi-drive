@@ -1137,6 +1137,45 @@ test("checkpoint scope mismatch, unsafe paths and stale writer locks fail closed
   }
 });
 
+test("writer lock acquisition removes its own file after directory-sync failure and permits retry", () => {
+  const lockPath = path.join(privateTestRoot, "writer-lock-sync-failure.lock");
+  const options = { lockPath, assertPrivatePathImpl: () => {} };
+  assert.throws(() => acquireWriterLock({
+    ...options,
+    syncDirectoryImpl: () => { throw new Error("simulated directory sync failure"); },
+  }), { message: "lock-acquisition-failed" });
+  assert.equal(fs.existsSync(lockPath), false);
+
+  const lock = acquireWriterLock({ ...options, syncDirectoryImpl: () => {} });
+  assert.equal(fs.existsSync(lockPath), true);
+  fs.closeSync(lock.descriptor);
+  fs.unlinkSync(lockPath);
+});
+
+test("writer lock cleanup does not rely on a complete token and leaves a replacement untouched", () => {
+  const lockPath = path.join(privateTestRoot, "writer-lock-partial-write.lock");
+  const options = { lockPath, assertPrivatePathImpl: () => {}, syncDirectoryImpl: () => {} };
+  assert.throws(() => acquireWriterLock({
+    ...options,
+    writeLockImpl: (descriptor, token) => {
+      fs.writeSync(descriptor, token, 0, 5, 0);
+      throw new Error("simulated partial token write");
+    },
+  }), { message: "lock-acquisition-failed" });
+  assert.equal(fs.existsSync(lockPath), false);
+
+  assert.throws(() => acquireWriterLock({
+    ...options,
+    syncDirectoryImpl: () => {
+      fs.unlinkSync(lockPath);
+      fs.writeFileSync(lockPath, "replacement-lock", { mode: 0o600 });
+      throw new Error("simulated failure after replacement");
+    },
+  }), { message: "lock-cleanup-failed" });
+  assert.equal(fs.readFileSync(lockPath, "utf8"), "replacement-lock");
+  fs.unlinkSync(lockPath);
+});
+
 test("different checkpoint paths contend for one production lock and release safely", async () => {
   const firstPaths = statePaths();
   const secondPaths = statePaths();

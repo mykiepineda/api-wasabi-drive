@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const crypto = require("node:crypto");
 const os = require("node:os");
 const path = require("node:path");
 const {
@@ -10,16 +11,69 @@ const {
   PutObjectCommand,
 } = require("@aws-sdk/client-s3");
 const { createThumbnailKey } = require("../src/thumbnail/key");
-const { runProductionBackfill } = require("../src/thumbnail/production-backfill");
+const { runProductionBackfill: runProductionBackfillImpl } = require("../src/thumbnail/production-backfill");
 const {
   loadProductionBackfillConfig,
   parseArguments,
   validateSourceScope,
   validateStatePaths,
+  appendAuditRecord,
+  acquireWriterLock,
   writeCheckpointAtomically,
 } = require("../src/thumbnail/production-backfill");
 const { main, safeSummary } = require("../scripts/thumbnail-backfill-prd");
 const { createThumbnailPrdBackfillStorage } = require("../src/storage/thumbnail-prd-backfill-wasabi");
+
+const writeCheckpointForTests = (file, value) =>
+  writeCheckpointAtomically(file, value, () => {});
+const appendAuditForTests = (file, record, options = {}) =>
+  appendAuditRecord(file, record, {
+    assertPrivatePath: () => {},
+    ...options,
+    syncDirectory: () => {},
+  });
+const testLockPath = () => path.join(privateTestRoot, "production-backfill-test.lock");
+const runProductionBackfill = (options) => {
+  let generate = options.generate;
+  if (typeof generate === "function") {
+    generate = async (params) => {
+      let intentId;
+      let outcomeRecorded = false;
+      const mockedParams = {
+        ...params,
+        recordWriteIntent: (key) => {
+          intentId = params.recordWriteIntent(key);
+          return intentId;
+        },
+        recordWriteOutcome: (...args) => {
+          params.recordWriteOutcome(...args);
+          outcomeRecorded = true;
+        },
+      };
+      const result = await options.generate(mockedParams);
+      if (result?.category === "generated" && !intentId) {
+        intentId = params.recordWriteIntent(result.derivedKey);
+        params.recordWriteOutcome(intentId, result.derivedKey, "generated");
+      } else if (result?.category === "generated" && !outcomeRecorded) {
+        throw new Error("mock-generated-without-outcome");
+      }
+      return result;
+    };
+  }
+  return runProductionBackfillImpl({
+    platform: "linux",
+    saveCheckpoint: writeCheckpointForTests,
+    appendAudit: appendAuditForTests,
+    assertPrivatePathImpl: () => {},
+    acquireLock: () => acquireWriterLock({
+      lockPath: testLockPath(),
+      syncDirectoryImpl: () => {},
+      assertPrivatePathImpl: () => {},
+    }),
+    ...options,
+    generate,
+  });
+};
 
 const scope = {
   sourceBucket: "approved-source-photos",
@@ -64,7 +118,14 @@ const generatedKey = createThumbnailKey({
   completeSourceKey: `${scope.prefix}image.jpg`,
   normalizedETag: "source-etag",
 });
-const privateTestRoot = fs.mkdtempSync(path.join(os.homedir(), ".wasabi-prd-backfill-test-"));
+const scopeId = crypto.createHash("sha256").update(JSON.stringify([
+  scope.sourceBucket,
+  scope.sourceRegion,
+  scope.prefix,
+  scope.destinationBucket,
+  scope.destinationRegion,
+])).digest("hex");
+const privateTestRoot = fs.mkdtempSync(path.join(os.tmpdir(), ".wasabi-prd-backfill-test-"));
 if (process.platform !== "win32") fs.chmodSync(privateTestRoot, 0o700);
 let nextStatePath = 0;
 const makePrivateDirectory = () => privateTestRoot;
@@ -260,6 +321,25 @@ test("default CLI is dry-run and prints only a validated aggregate summary", asy
     oversize: 0,
     failed: 0,
   });
+});
+
+test("Windows production execution fails before storage creation because rename durability is unverified", async () => {
+  let storageCreated = false;
+  const output = [];
+  const exitCode = await main(cliArgs([
+    "--checkpoint", path.join(privateTestRoot, "windows-checkpoint.json"),
+    "--audit", path.join(privateTestRoot, "windows-audit.jsonl"),
+    "--execute",
+    "--confirm-prd-backfill",
+  ]), {
+    env: configEnv(),
+    platform: "win32",
+    write: (line) => output.push(line),
+    createStorage: () => { storageCreated = true; throw new Error("must not create storage"); },
+  });
+  assert.equal(exitCode, 1);
+  assert.equal(storageCreated, false);
+  assert.equal(JSON.parse(output[0]).category, "failed");
 });
 
 test("region clients and operations are explicit and bound to the configured buckets, prefix and v1 keys", async () => {
@@ -589,24 +669,30 @@ test("live scan initializes a scoped checkpoint, writes audit before checkpoint,
     ...paths,
     generate: async () => generated(),
     appendAudit: (file, record) => {
-      writes.push("audit");
-      require("../src/thumbnail/production-backfill").appendAuditRecord(file, record);
+      writes.push(`audit:${record.type}`);
+      appendAuditForTests(file, record);
     },
     saveCheckpoint: (file, value) => {
       writes.push(`checkpoint:${value.lastCompletedKey ?? "initial"}`);
-      writeCheckpointAtomically(file, value);
+      writeCheckpointForTests(file, value);
     },
   });
   assert.equal(firstSummary.category, "paused-cap");
   assert.equal(firstSummary.generated, 1);
-  assert.deepEqual(writes, ["checkpoint:initial", "audit", `checkpoint:${scope.prefix}a.jpg`]);
+  assert.deepEqual(writes, [
+    "checkpoint:initial",
+    "audit:write-intent",
+    "audit:write-outcome",
+    `checkpoint:${scope.prefix}a.jpg`,
+  ]);
   assert.equal(JSON.parse(fs.readFileSync(paths.checkpointPath, "utf8")).lastCompletedKey, `${scope.prefix}a.jpg`);
   const auditRecords = fs.readFileSync(paths.auditPath, "utf8").trim().split("\n").map(JSON.parse);
-  assert.deepEqual(Object.keys(auditRecords[0]).sort(), [
-    "derivedKey", "scopeId", "status", "timestamp", "version",
-  ]);
+  assert.equal(auditRecords.length, 2);
+  assert.equal(auditRecords[0].type, "write-intent");
   assert.equal(auditRecords[0].derivedKey, generatedKey);
-  assert.equal(auditRecords[0].status, "generated");
+  assert.equal(auditRecords[1].type, "write-outcome");
+  assert.equal(auditRecords[1].outcome, "generated");
+  assert.equal(auditRecords[1].eventId, auditRecords[0].eventId);
   assert.equal(auditRecords[0].scopeId.length, 64);
 
   const second = storageFor([{
@@ -623,7 +709,7 @@ test("live scan initializes a scoped checkpoint, writes audit before checkpoint,
   });
   assert.equal(resumed.alreadyPresent, 1);
   assert.equal(second.calls[0].startAfter, `${scope.prefix}a.jpg`);
-  assert.equal(fs.readFileSync(paths.auditPath, "utf8").trim().split("\n").length, 1);
+  assert.equal(fs.readFileSync(paths.auditPath, "utf8").trim().split("\n").length, 2);
   assert.equal(fs.existsSync(require("../src/thumbnail/production-backfill").LOCK_PATH), false);
 });
 
@@ -797,7 +883,7 @@ test("audit failure and checkpoint failure never advance past an unsettled objec
       saveCheckpoint: (file, checkpoint) => {
         saveCount += 1;
         if (saveCount > 1) throw new Error("checkpoint disk failed");
-        writeCheckpointAtomically(file, checkpoint);
+        writeCheckpointForTests(file, checkpoint);
       },
     });
     assert.equal(summary.category, "failed");
@@ -806,9 +892,198 @@ test("audit failure and checkpoint failure never advance past an unsettled objec
   });
 });
 
+test("checkpoint rename is followed by directory sync and sync failure is not reported as durable", () => {
+  const paths = statePaths();
+  const checkpoint = { version: 1, scope, lastCompletedKey: null };
+  const order = [];
+  writeCheckpointAtomically(paths.checkpointPath, checkpoint, (directory) => {
+    order.push("directory-sync");
+    assert.equal(directory, path.dirname(paths.checkpointPath));
+    assert.deepEqual(JSON.parse(fs.readFileSync(paths.checkpointPath, "utf8")), checkpoint);
+    assert.equal(fs.readdirSync(directory).some((name) => name.startsWith("checkpoint-")), true);
+  });
+  assert.deepEqual(order, ["directory-sync"]);
+
+  const replacement = { ...checkpoint, lastCompletedKey: `${scope.prefix}a.jpg` };
+  assert.throws(() => writeCheckpointAtomically(
+    paths.checkpointPath,
+    replacement,
+    () => { throw new Error("simulated directory sync failure"); },
+  ), { message: "checkpoint-durability-unknown" });
+  assert.deepEqual(JSON.parse(fs.readFileSync(paths.checkpointPath, "utf8")), replacement);
+});
+
+test("truncated and malformed audit tails fail closed without listing or changing evidence", async (t) => {
+  for (const [name, tail] of [
+    ["truncated", "{\"version\":2"],
+    ["malformed complete line", "{}\n"],
+  ]) {
+    await t.test(name, async () => {
+      const paths = statePaths();
+      fs.writeFileSync(paths.auditPath, tail, { mode: 0o600 });
+      const before = fs.readFileSync(paths.auditPath);
+      let listed = false;
+      const result = await runProductionBackfill({
+        scope,
+        storage: { async listSourcePage() { listed = true; return { Contents: [], IsTruncated: false }; } },
+        maxObjects: 1,
+        dryRun: false,
+        ...paths,
+      });
+      assert.equal(result.category, "failed");
+      assert.equal(listed, false);
+      assert.deepEqual(fs.readFileSync(paths.auditPath), before);
+      assert.equal(fs.existsSync(paths.checkpointPath), false);
+    });
+  }
+});
+
+test("partial audit writes are detected on retry and are never truncated or appended over", async () => {
+  const paths = statePaths();
+  const intent = {
+    version: 2,
+    scopeId,
+    timestamp: new Date().toISOString(),
+    type: "write-intent",
+    eventId: crypto.randomUUID().replaceAll("-", ""),
+    derivedKey: generatedKey,
+  };
+  let wrotePrefix = false;
+  assert.throws(() => appendAuditRecord(paths.auditPath, intent, {
+    assertPrivatePath: () => {},
+    syncDirectory: () => {},
+    writeSync: (descriptor, bytes, offset, length) => {
+      if (!wrotePrefix) {
+        wrotePrefix = true;
+        return fs.writeSync(descriptor, bytes, offset, Math.min(5, length));
+      }
+      throw new Error("simulated interrupted append");
+    },
+  }), { message: "audit-write-failed" });
+  const before = fs.readFileSync(paths.auditPath);
+  assert.ok(before.length > 0);
+  assert.ok(!before.toString("utf8").endsWith("\n"));
+
+  let listed = false;
+  const result = await runProductionBackfill({
+    scope,
+    storage: { async listSourcePage() { listed = true; return { Contents: [], IsTruncated: false }; } },
+    maxObjects: 1,
+    dryRun: false,
+    ...paths,
+  });
+  assert.equal(result.category, "failed");
+  assert.equal(listed, false);
+  assert.deepEqual(fs.readFileSync(paths.auditPath), before);
+});
+
+test("intent precedes PUT, and an outcome append failure remains unknown and blocks retry", async () => {
+  const paths = statePaths();
+  const order = [];
+  const item = makeItem(`${scope.prefix}image.jpg`);
+  const storage = {
+    async listSourcePage() { return { Contents: [item], IsTruncated: false }; },
+    async headSource() { return { etag: item.ETag, size: item.Size }; },
+    async headDerived() { return false; },
+    async getSourceBuffer() { return Buffer.from("source"); },
+    async putDerived() { order.push("put"); return { ETag: '"created"' }; },
+  };
+  const generateWithPolicy = (params) => require("../src/thumbnail/generate")
+    .generateThumbnailForObject({
+      ...params,
+      applyPolicy: async () => ({
+        eligible: true,
+        derivedKey: generatedKey,
+        webpBuffer: Buffer.from("webp"),
+        contentType: "image/webp",
+        dimensions: { width: 1, height: 1 },
+      }),
+    });
+  const result = await runProductionBackfill({
+    scope,
+    storage,
+    maxObjects: 1,
+    dryRun: false,
+    ...paths,
+    generate: generateWithPolicy,
+    appendAudit: (file, record) => {
+      order.push(`audit:${record.type}:${record.outcome ?? ""}`);
+      if (record.type === "write-outcome" && record.outcome === "generated") {
+        return appendAuditRecord(file, record, {
+          assertPrivatePath: () => {},
+          syncDirectory: () => {},
+          fsyncSync: () => { throw new Error("simulated audit sync failure"); },
+        });
+      }
+      appendAuditForTests(file, record);
+    },
+    saveCheckpoint: (file, value) => {
+      order.push("checkpoint");
+      writeCheckpointForTests(file, value);
+    },
+  });
+  assert.equal(result.category, "failed");
+  assert.deepEqual(order.slice(0, 4), [
+    "checkpoint",
+    "audit:write-intent:",
+    "put",
+    "audit:write-outcome:generated",
+  ]);
+  assert.equal(order.filter((entry) => entry === "checkpoint").length, 1);
+  const records = fs.readFileSync(paths.auditPath, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(records.at(-2).outcome, "generated");
+  assert.equal(records.at(-1).outcome, "unknown");
+
+  let listedOnRetry = false;
+  const retry = await runProductionBackfill({
+    scope,
+    storage: { async listSourcePage() { listedOnRetry = true; return { Contents: [item], IsTruncated: false }; } },
+    maxObjects: 1,
+    dryRun: false,
+    ...paths,
+  });
+  assert.equal(retry.category, "failed");
+  assert.equal(retry.alreadyPresent, 0);
+  assert.equal(listedOnRetry, false);
+});
+
+test("retry converts a crashed pending intent to unknown and never classifies it as already-present", async () => {
+  const paths = statePaths();
+  const item = makeItem(`${scope.prefix}image.jpg`);
+  const first = await runProductionBackfill({
+    scope,
+    storage: storageFor([{ Contents: [item], IsTruncated: false }]).storage,
+    maxObjects: 1,
+    dryRun: false,
+    ...paths,
+    generate: async ({ recordWriteIntent }) => {
+      recordWriteIntent(generatedKey);
+      throw new Error("simulated process stop after durable intent");
+    },
+  });
+  assert.equal(first.category, "failed");
+
+  let listed = false;
+  const retry = await runProductionBackfill({
+    scope,
+    storage: { async listSourcePage() { listed = true; return { Contents: [item], IsTruncated: false }; } },
+    maxObjects: 1,
+    dryRun: false,
+    ...paths,
+  });
+  assert.equal(retry.category, "failed");
+  assert.equal(retry.alreadyPresent, 0);
+  assert.equal(listed, false);
+  const records = fs.readFileSync(paths.auditPath, "utf8").trim().split("\n").map(JSON.parse);
+  assert.deepEqual(records.map((record) => record.type === "write-intent" ? "intent" : record.outcome), [
+    "intent",
+    "unknown",
+  ]);
+});
+
 test("checkpoint scope mismatch, unsafe paths and stale writer locks fail closed", async (t) => {
   const paths = statePaths();
-  writeCheckpointAtomically(paths.checkpointPath, {
+  writeCheckpointForTests(paths.checkpointPath, {
     version: 1,
     scope: { ...scope, prefix: "different/" },
     lastCompletedKey: null,
@@ -847,13 +1122,18 @@ test("checkpoint scope mismatch, unsafe paths and stale writer locks fail closed
     }));
   });
 
-  const { LOCK_PATH, acquireWriterLock } = require("../src/thumbnail/production-backfill");
+  const { acquireWriterLock } = require("../src/thumbnail/production-backfill");
+  const staleLockPath = path.join(privateTestRoot, "stale-production-backfill.lock");
   try {
-    fs.writeFileSync(LOCK_PATH, "stale-lock");
-    assert.throws(() => acquireWriterLock(), { message: "lock-already-held" });
-    assert.equal(fs.readFileSync(LOCK_PATH, "utf8"), "stale-lock");
+    fs.writeFileSync(staleLockPath, "stale-lock");
+    assert.throws(() => acquireWriterLock({
+      lockPath: staleLockPath,
+      syncDirectoryImpl: () => {},
+      assertPrivatePathImpl: () => {},
+    }), { message: "lock-already-held" });
+    assert.equal(fs.readFileSync(staleLockPath, "utf8"), "stale-lock");
   } finally {
-    fs.unlinkSync(LOCK_PATH);
+    fs.unlinkSync(staleLockPath);
   }
 });
 
@@ -878,7 +1158,7 @@ test("different checkpoint paths contend for one production lock and release saf
     },
   });
   await firstStarted;
-  assert.equal(fs.existsSync(require("../src/thumbnail/production-backfill").LOCK_PATH), true);
+  assert.equal(fs.existsSync(testLockPath()), true);
   let secondListCalls = 0;
   const secondRun = await runProductionBackfill({
     scope,
@@ -897,7 +1177,7 @@ test("different checkpoint paths contend for one production lock and release saf
   finishFirst({ category: "already-present", count: 1 });
   const firstResult = await firstRun;
   assert.equal(firstResult.category, "completed");
-  assert.equal(fs.existsSync(require("../src/thumbnail/production-backfill").LOCK_PATH), false);
+  assert.equal(fs.existsSync(testLockPath()), false);
 });
 
 test("generated audit is append-only and ambiguous post-PUT replay is not claimed as generated", async () => {
@@ -915,7 +1195,7 @@ test("generated audit is append-only and ambiguous post-PUT replay is not claime
     generate: async () => generated(),
     saveCheckpoint: (file, checkpoint) => {
       if (checkpoint.lastCompletedKey !== null) throw new Error("simulated stop after audit/PUT");
-      writeCheckpointAtomically(file, checkpoint);
+      writeCheckpointForTests(file, checkpoint);
     },
   });
   assert.equal(first.category, "failed");

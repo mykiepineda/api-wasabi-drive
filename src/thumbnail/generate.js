@@ -26,6 +26,8 @@ const generateThumbnailForObject = async ({
   applyPolicy = applyThumbnailPolicy,
   expectedEtag,
   expectedSize,
+  recordWriteIntent,
+  recordWriteOutcome,
 }) => {
   if (
     typeof sourceBucket !== "string" || !sourceBucket
@@ -126,13 +128,23 @@ const generateThumbnailForObject = async ({
       return failure("failed", "invalid-thumbnail-result");
     }
 
+    let intentId;
     try {
+      if (typeof recordWriteIntent === "function") {
+        intentId = recordWriteIntent(derivedKey);
+        if (typeof intentId !== "string" || !intentId) {
+          throw new Error("write-intent-not-recorded");
+        }
+      }
       await storage.putDerived({
         bucket: destinationBucket,
         key: derivedKey,
         region: destinationRegion,
         body: result.webpBuffer,
       });
+      if (typeof recordWriteOutcome === "function") {
+        recordWriteOutcome(intentId, derivedKey, "generated");
+      }
     } catch (error) {
       if (error instanceof ThumbnailStorageError && error.code === "already-exists") {
         const racedObjectExists = await storage.headDerived({
@@ -141,8 +153,14 @@ const generateThumbnailForObject = async ({
           region: destinationRegion,
         });
         if (racedObjectExists) {
+          if (typeof recordWriteOutcome === "function") {
+            recordWriteOutcome(intentId, derivedKey, "not-generated");
+          }
           return { ...failure("already-present"), derivedKey };
         }
+      }
+      if (intentId && typeof recordWriteOutcome === "function") {
+        recordWriteOutcome(intentId, derivedKey, "unknown");
       }
       throw error;
     }

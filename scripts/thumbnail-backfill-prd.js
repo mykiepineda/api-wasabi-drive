@@ -54,6 +54,7 @@ const main = async (
     write = (message) => console.log(message),
     createStorage = createThumbnailPrdBackfillStorage,
     runScan = runProductionBackfill,
+    platform = process.platform,
   } = {},
 ) => {
   try {
@@ -66,6 +67,7 @@ const main = async (
       : parseBoundedInteger(options.pageSize, 1, 10, "invalid-page-size");
     let statePaths;
     if (options.execute) {
+      if (platform === "win32") throw new Error("directory-sync-unsupported");
       statePaths = validateStatePaths({
         checkpointPath: options.checkpoint,
         auditPath: options.audit,
@@ -94,6 +96,7 @@ const main = async (
       dryRun: !options.execute,
       checkpointPath: statePaths?.checkpointPath,
       auditPath: statePaths?.auditPath,
+      platform,
     });
     const summary = safeSummary(result);
     write(JSON.stringify(summary));

@@ -265,7 +265,7 @@ const assertPrivatePath = (targetPath, metadata, expectDirectory = false) => {
   }
 };
 
-const validateStatePaths = ({ checkpointPath, auditPath }) => {
+const validateStatePaths = ({ checkpointPath, auditPath, assertPrivatePathImpl = assertPrivatePath }) => {
   const validated = [];
   const existingFiles = [];
   for (const requested of [checkpointPath, auditPath]) {
@@ -281,11 +281,11 @@ const validateStatePaths = ({ checkpointPath, auditPath }) => {
       throw new Error("invalid-local-state-path");
     }
     const parentStat = fs.statSync(parent);
-    assertPrivatePath(parent, parentStat, true);
+    assertPrivatePathImpl(parent, parentStat, true);
     try {
       const targetStat = fs.lstatSync(target);
       if (targetStat.isSymbolicLink()) throw new Error("invalid-local-state-path");
-      assertPrivatePath(target, targetStat);
+      assertPrivatePathImpl(target, targetStat);
       if (targetStat.nlink !== 1) throw new Error("invalid-local-state-path");
       existingFiles.push(targetStat);
     } catch (error) {
@@ -319,7 +319,7 @@ const buildCheckpoint = (scope, lastCompletedKey) => ({
   lastCompletedKey,
 });
 
-const readCheckpoint = (checkpointPath, scope) => {
+const readCheckpoint = (checkpointPath, scope, assertPrivatePathImpl = assertPrivatePath) => {
   let parsed;
   let descriptor;
   try {
@@ -338,7 +338,7 @@ const readCheckpoint = (checkpointPath, scope) => {
     ) {
       throw new Error("invalid-checkpoint");
     }
-    assertPrivatePath(checkpointPath, opened);
+    assertPrivatePathImpl(checkpointPath, opened);
     parsed = JSON.parse(fs.readFileSync(descriptor, "utf8"));
   } catch {
     throw new Error("invalid-checkpoint");
@@ -369,7 +369,7 @@ const readCheckpoint = (checkpointPath, scope) => {
 };
 
 const syncDirectory = (directory) => {
-  if (process.platform === "win32") return;
+  if (process.platform === "win32") throw new Error("directory-sync-unsupported");
   const descriptor = fs.openSync(directory, "r");
   try {
     fs.fsyncSync(descriptor);
@@ -378,9 +378,14 @@ const syncDirectory = (directory) => {
   }
 };
 
-const writeCheckpointAtomically = (checkpointPath, checkpoint) => {
+const writeCheckpointAtomically = (
+  checkpointPath,
+  checkpoint,
+  syncDirectoryImpl = syncDirectory,
+) => {
   const tempPath = `${checkpointPath}.tmp-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
   let descriptor;
+  let renamed = false;
   try {
     descriptor = fs.openSync(tempPath, "wx", 0o600);
     fs.writeFileSync(descriptor, `${JSON.stringify(checkpoint)}\n`, "utf8");
@@ -388,24 +393,28 @@ const writeCheckpointAtomically = (checkpointPath, checkpoint) => {
     fs.closeSync(descriptor);
     descriptor = undefined;
     fs.renameSync(tempPath, checkpointPath);
+    renamed = true;
+    syncDirectoryImpl(path.dirname(checkpointPath));
   } catch {
     if (descriptor !== undefined) fs.closeSync(descriptor);
-    try {
-      fs.unlinkSync(tempPath);
-    } catch (error) {
-      if (error.code !== "ENOENT") throw new Error("checkpoint-cleanup-failed");
+    if (!renamed) {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw new Error("checkpoint-cleanup-failed");
+      }
     }
-    throw new Error("checkpoint-write-failed");
+    throw new Error(renamed ? "checkpoint-durability-unknown" : "checkpoint-write-failed");
   }
 };
 
-const checkpointExists = (checkpointPath) => {
+const checkpointExists = (checkpointPath, assertPrivatePathImpl = assertPrivatePath) => {
   try {
     const metadata = fs.lstatSync(checkpointPath);
     if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.nlink !== 1) {
       throw new Error("invalid-checkpoint");
     }
-    assertPrivatePath(checkpointPath, metadata);
+    assertPrivatePathImpl(checkpointPath, metadata);
     return true;
   } catch (error) {
     if (error.code === "ENOENT") return false;
@@ -413,13 +422,17 @@ const checkpointExists = (checkpointPath) => {
   }
 };
 
-const acquireWriterLock = () => {
+const acquireWriterLock = ({
+  lockPath = LOCK_PATH,
+  syncDirectoryImpl = syncDirectory,
+  assertPrivatePathImpl = assertPrivatePath,
+} = {}) => {
   let descriptor;
   try {
-    const lockDirectory = path.dirname(LOCK_PATH);
+    const lockDirectory = path.dirname(lockPath);
     const directoryStat = fs.statSync(lockDirectory);
     if (process.platform === "win32") {
-      assertPrivatePath(lockDirectory, directoryStat, true);
+      assertPrivatePathImpl(lockDirectory, directoryStat, true);
     } else if (
       !directoryStat.isDirectory()
       || (directoryStat.mode & 0o022) !== 0
@@ -427,13 +440,13 @@ const acquireWriterLock = () => {
     ) {
       throw new Error("non-private-lock-directory");
     }
-    descriptor = fs.openSync(LOCK_PATH, "wx", 0o600);
+    descriptor = fs.openSync(lockPath, "wx", 0o600);
     const identity = fs.fstatSync(descriptor);
     const token = crypto.randomBytes(24).toString("hex");
     fs.writeFileSync(descriptor, token, "utf8");
     fs.fsyncSync(descriptor);
-    syncDirectory(path.dirname(LOCK_PATH));
-    return { descriptor, dev: identity.dev, ino: identity.ino, token };
+    syncDirectoryImpl(path.dirname(lockPath));
+    return { descriptor, dev: identity.dev, ino: identity.ino, token, path: lockPath };
   } catch (error) {
     if (descriptor !== undefined) fs.closeSync(descriptor);
     if (error.code === "EEXIST") throw new Error("lock-already-held");
@@ -443,23 +456,153 @@ const acquireWriterLock = () => {
 
 const releaseWriterLock = (lock) => {
   fs.closeSync(lock.descriptor);
-  const metadata = fs.lstatSync(LOCK_PATH);
+  const lockPath = lock.path ?? LOCK_PATH;
+  const metadata = fs.lstatSync(lockPath);
   if (
     metadata.isSymbolicLink()
     || metadata.dev !== lock.dev
     || metadata.ino !== lock.ino
-    || fs.readFileSync(LOCK_PATH, "utf8") !== lock.token
+    || fs.readFileSync(lockPath, "utf8") !== lock.token
   ) {
     throw new Error("lock-ownership-lost");
   }
-  fs.unlinkSync(LOCK_PATH);
+  fs.unlinkSync(lockPath);
 };
 
-const appendAuditRecord = (auditPath, record) => {
+const AUDIT_VERSION = 2;
+const parseAuditRecords = (auditPath, scopeId, assertPrivatePathImpl = assertPrivatePath) => {
+  let descriptor;
+  let text;
+  try {
+    descriptor = fs.openSync(
+      auditPath,
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+    );
+    const opened = fs.fstatSync(descriptor);
+    const current = fs.lstatSync(auditPath);
+    if (
+      current.isSymbolicLink()
+      || !opened.isFile()
+      || opened.dev !== current.dev
+      || opened.ino !== current.ino
+      || opened.nlink !== 1
+    ) throw new Error("invalid-audit-file");
+    assertPrivatePathImpl(auditPath, opened);
+    text = fs.readFileSync(descriptor, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return { records: [], intents: new Map() };
+    throw new Error("invalid-audit-file");
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+  if (text.length === 0) return { records: [], intents: new Map() };
+  if (!text.endsWith("\n")) throw new Error("invalid-audit-boundary");
+
+  const records = [];
+  const intents = new Map();
+  for (const line of text.slice(0, -1).split("\n")) {
+    let record;
+    try { record = JSON.parse(line); } catch { throw new Error("invalid-audit-record"); }
+    if (
+      !record
+      || typeof record !== "object"
+      || Array.isArray(record)
+      || record.scopeId !== scopeId
+      || typeof record.timestamp !== "string"
+      || !Number.isFinite(Date.parse(record.timestamp))
+      || new Date(record.timestamp).toISOString() !== record.timestamp
+      || !validDerivedKey(record.derivedKey)
+    ) throw new Error("invalid-audit-record");
+    const pending = [...intents.entries()].find(([, intent]) => intent.outcome === null);
+    if (
+      [...intents.values()].some((intent) => intent.outcome === "unknown")
+      || (pending && (record.type !== "write-outcome" || record.eventId !== pending[0]))
+    ) throw new Error("invalid-audit-record");
+
+    const keys = Object.keys(record).sort().join(",");
+    if (record.version === CHECKPOINT_VERSION) {
+      if (
+        keys !== "derivedKey,scopeId,status,timestamp,version"
+        || record.status !== "generated"
+      ) throw new Error("invalid-audit-record");
+    } else if (record.version === AUDIT_VERSION) {
+      if (!/^[a-f0-9]{32}$/.test(record.eventId)) throw new Error("invalid-audit-record");
+      if (record.type === "write-intent") {
+        if (
+          keys !== "derivedKey,eventId,scopeId,timestamp,type,version"
+          || intents.has(record.eventId)
+        ) throw new Error("invalid-audit-record");
+        intents.set(record.eventId, { derivedKey: record.derivedKey, outcome: null });
+      } else if (record.type === "write-outcome") {
+        const previousOutcome = intents.get(record.eventId)?.outcome;
+        if (
+          keys !== "derivedKey,eventId,outcome,scopeId,timestamp,type,version"
+          || !["generated", "not-generated", "unknown"].includes(record.outcome)
+          || !intents.has(record.eventId)
+          || intents.get(record.eventId).derivedKey !== record.derivedKey
+          || (
+            previousOutcome !== null
+            && !(previousOutcome === "generated" && record.outcome === "unknown")
+          )
+        ) throw new Error("invalid-audit-record");
+        intents.get(record.eventId).outcome = record.outcome;
+      } else {
+        throw new Error("invalid-audit-record");
+      }
+    } else {
+      throw new Error("invalid-audit-record");
+    }
+    records.push(record);
+  }
+  return { records, intents };
+};
+
+const appendAuditRecord = (auditPath, record, options = {}) => {
   const flags = fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT
     | (fs.constants.O_NOFOLLOW ?? 0);
   let descriptor;
   try {
+    const current = parseAuditRecords(
+      auditPath,
+      record.scopeId,
+      options.assertPrivatePath ?? assertPrivatePath,
+    );
+    if (
+      record.version !== AUDIT_VERSION
+      || !validDerivedKey(record.derivedKey)
+      || typeof record.scopeId !== "string"
+      || !/^[a-f0-9]{64}$/.test(record.scopeId)
+      || typeof record.timestamp !== "string"
+      || !Number.isFinite(Date.parse(record.timestamp))
+      || new Date(record.timestamp).toISOString() !== record.timestamp
+      || [...current.intents.values()].some((intent) => intent.outcome === "unknown")
+    ) {
+      throw new Error("invalid-audit-record");
+    }
+    if (record.type === "write-intent") {
+      if (
+        Object.keys(record).sort().join(",")
+          !== "derivedKey,eventId,scopeId,timestamp,type,version"
+        || !/^[a-f0-9]{32}$/.test(record.eventId)
+        || current.intents.has(record.eventId)
+        || [...current.intents.values()].some((intent) => intent.outcome === null)
+      ) throw new Error("invalid-audit-record");
+    } else if (record.type === "write-outcome") {
+      const intent = current.intents.get(record.eventId);
+      if (
+        Object.keys(record).sort().join(",")
+          !== "derivedKey,eventId,outcome,scopeId,timestamp,type,version"
+        || !["generated", "not-generated", "unknown"].includes(record.outcome)
+        || !intent
+        || (
+          intent.outcome !== null
+          && !(intent.outcome === "generated" && record.outcome === "unknown")
+        )
+        || intent.derivedKey !== record.derivedKey
+      ) throw new Error("invalid-audit-record");
+    } else {
+      throw new Error("invalid-audit-record");
+    }
     let existed = true;
     try {
       fs.lstatSync(auditPath);
@@ -470,7 +613,7 @@ const appendAuditRecord = (auditPath, record) => {
     descriptor = fs.openSync(auditPath, flags, 0o600);
     const metadata = fs.fstatSync(descriptor);
     if (process.platform !== "win32" || existed) {
-      assertPrivatePath(auditPath, metadata);
+      (options.assertPrivatePath ?? assertPrivatePath)(auditPath, metadata);
     } else if (!metadata.isFile()) {
       throw new Error("invalid-audit-file");
     }
@@ -486,10 +629,12 @@ const appendAuditRecord = (auditPath, record) => {
     const bytes = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
     let written = 0;
     while (written < bytes.length) {
-      written += fs.writeSync(descriptor, bytes, written, bytes.length - written);
+      const count = (options.writeSync ?? fs.writeSync)(descriptor, bytes, written, bytes.length - written);
+      if (!Number.isSafeInteger(count) || count <= 0) throw new Error("audit-write-failed");
+      written += count;
     }
-    fs.fsyncSync(descriptor);
-    if (!existed) syncDirectory(path.dirname(auditPath));
+    (options.fsyncSync ?? fs.fsyncSync)(descriptor);
+    if (!existed) (options.syncDirectory ?? syncDirectory)(path.dirname(auditPath));
   } catch {
     throw new Error("audit-write-failed");
   } finally {
@@ -503,6 +648,8 @@ const classifyObject = async ({
   storage,
   dryRun,
   generate = generateThumbnailForObject,
+  recordWriteIntent,
+  recordWriteOutcome,
 }) => {
   const key = object?.Key;
   if (typeof key !== "string" || !key.startsWith(scope.prefix)) {
@@ -535,6 +682,8 @@ const classifyObject = async ({
     dryRun,
     expectedEtag: object.ETag,
     expectedSize: size,
+    recordWriteIntent,
+    recordWriteOutcome,
   });
 };
 
@@ -602,6 +751,8 @@ const runProductionBackfill = async ({
   appendAudit = appendAuditRecord,
   acquireLock = acquireWriterLock,
   releaseLock = releaseWriterLock,
+  platform = process.platform,
+  assertPrivatePathImpl = assertPrivatePath,
 }) => {
   if (
     !scope
@@ -629,7 +780,8 @@ const runProductionBackfill = async ({
       throw new Error("dry-run-local-state-not-allowed");
     }
   } else {
-    localPaths = validateStatePaths({ checkpointPath, auditPath });
+    if (platform === "win32") throw new Error("directory-sync-unsupported");
+    localPaths = validateStatePaths({ checkpointPath, auditPath, assertPrivatePathImpl });
   }
 
   const summary = baseSummary(dryRun);
@@ -639,8 +791,34 @@ const runProductionBackfill = async ({
   try {
     if (!dryRun) {
       lock = acquireLock();
-      if (checkpointExists(localPaths.checkpointPath)) {
-        lastCompletedKey = readCheckpoint(localPaths.checkpointPath, scope).lastCompletedKey;
+      const auditState = parseAuditRecords(
+        localPaths.auditPath,
+        scopeFingerprint(scope),
+        assertPrivatePathImpl,
+      );
+      const unresolved = [...auditState.intents.entries()].find(([, intent]) => intent.outcome === null);
+      if (unresolved) {
+        const [eventId, intent] = unresolved;
+        appendAudit(localPaths.auditPath, {
+          version: AUDIT_VERSION,
+          scopeId: scopeFingerprint(scope),
+          timestamp: new Date().toISOString(),
+          type: "write-outcome",
+          eventId,
+          derivedKey: intent.derivedKey,
+          outcome: "unknown",
+        });
+        throw new Error("unresolved-write-intent");
+      }
+      if ([...auditState.intents.values()].some((intent) => intent.outcome === "unknown")) {
+        throw new Error("unknown-write-outcome");
+      }
+      if (checkpointExists(localPaths.checkpointPath, assertPrivatePathImpl)) {
+        lastCompletedKey = readCheckpoint(
+          localPaths.checkpointPath,
+          scope,
+          assertPrivatePathImpl,
+        ).lastCompletedKey;
       } else {
         saveCheckpoint(
           localPaths.checkpointPath,
@@ -673,7 +851,42 @@ const runProductionBackfill = async ({
       for (const object of objects) {
         if (summary.examined >= maxObjects) break;
         summary.examined += 1;
-        const result = await classifyObject({ scope, object, storage, dryRun, generate });
+        let writeIntentId;
+        let writeOutcome;
+        const recordWriteIntent = (derivedKey) => {
+          writeIntentId = crypto.randomUUID().replaceAll("-", "");
+          appendAudit(localPaths.auditPath, {
+            version: AUDIT_VERSION,
+            scopeId: scopeFingerprint(scope),
+            timestamp: new Date().toISOString(),
+            type: "write-intent",
+            eventId: writeIntentId,
+            derivedKey,
+          });
+          return writeIntentId;
+        };
+        const recordWriteOutcome = (eventId, derivedKey, outcome) => {
+          if (!eventId || eventId !== writeIntentId) throw new Error("invalid-write-outcome");
+          appendAudit(localPaths.auditPath, {
+            version: AUDIT_VERSION,
+            scopeId: scopeFingerprint(scope),
+            timestamp: new Date().toISOString(),
+            type: "write-outcome",
+            eventId,
+            derivedKey,
+            outcome,
+          });
+          writeOutcome = outcome;
+        };
+        const result = await classifyObject({
+          scope,
+          object,
+          storage,
+          dryRun,
+          generate,
+          recordWriteIntent: dryRun ? undefined : recordWriteIntent,
+          recordWriteOutcome: dryRun ? undefined : recordWriteOutcome,
+        });
         const category = result?.category;
         const accepted = result
           && typeof result === "object"
@@ -685,13 +898,9 @@ const runProductionBackfill = async ({
         }
         if (!dryRun && category === "generated") {
           if (!validDerivedKey(result.derivedKey)) throw new Error("invalid-derived-key");
-          appendAudit(localPaths.auditPath, {
-            version: CHECKPOINT_VERSION,
-            scopeId: scopeFingerprint(scope),
-            timestamp: new Date().toISOString(),
-            status: "generated",
-            derivedKey: result.derivedKey,
-          });
+          if (!writeIntentId || writeOutcome !== "generated") {
+            throw new Error("generated-without-audit-outcome");
+          }
         }
         if (category === "generated") summary.generated += 1;
         else if (category === "already-present") summary.alreadyPresent += 1;
@@ -737,6 +946,7 @@ const runProductionBackfill = async ({
 };
 
 module.exports = {
+  AUDIT_VERSION,
   CHECKPOINT_VERSION,
   DEFAULT_PAGE_SIZE,
   LOCK_PATH,
@@ -748,6 +958,7 @@ module.exports = {
   ensureOrderedProductionPage,
   loadProductionBackfillConfig,
   parseArguments,
+  parseAuditRecords,
   parseBoundedInteger,
   readCheckpoint,
   runProductionBackfill,
@@ -755,5 +966,6 @@ module.exports = {
   validatePrefix,
   validateSourceScope,
   validateStatePaths,
+  syncDirectory,
   writeCheckpointAtomically,
 };

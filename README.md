@@ -102,6 +102,43 @@ npm run thumbnail:preflight:prd -- --source-bucket "<owner-approved-source-bucke
 
 The page size is bounded (default 100; maximum 1000), and `--max-objects` is mandatory (maximum 1000). Output contains only aggregate object counts/bytes, eligibility categories, and `complete`/`capped`; the five primary categories account for every examined object and all examined bytes. `invalidEtag` is an independent quality counter that can overlap a primary category. `unsupported` means not currently eligible: besides unsupported formats and folder markers, it includes supported-format candidates with missing or invalid ETags when within the size limit. The oversized count means supported-format candidates above 25 MiB for this scan, not permanent unsupported status. Eligible CR2 counts are metadata-only preview candidates and do not establish that an object has a usable embedded JPEG. Provider errors are sanitized, and a capped sample is not a complete inventory. Although the command never prints object names, metadata listing can access real photo filenames, so use an appropriately scoped read-only credential and handle access accordingly. This command performs only source `ListObjectsV2`; it does not read object bodies, contact a derived bucket, or write checkpoints or objects. **PRODUCTION WRITES ARE NOT AUTHORIZED.**
 
+## Phase 8C-B2-B2 production backfill (implementation only; NOT YET AUTHORIZED)
+
+The local production backfill has a separate CLI and dedicated `THUMBNAIL_PRD_BACKFILL_*` credentials. It does not load `.env` or fall back to API (`WASABI_*`), TEST, preflight-audit, AWS profile, metadata-service, or deployment credentials. Configure only the one owner-approved Tokyo source scope and the private Singapore derived bucket in the local process environment; do not put real values in this repository. The intended initial source is the owner's complete 13-image Tokyo prefix validated by B2-B1; that metadata preflight is not itself authorization for this CLI. The CLI requires exact matches for the configured source bucket, Tokyo region (`ap-northeast-1`) and nonempty source prefix. The derived region is fixed to Singapore (`ap-southeast-1`), while its bucket name is supplied through local configuration, not inferred from a name or hardcoded by the tool.
+
+Placeholder-only local configuration (use a dedicated production backfill sub-user; never reuse other credentials):
+
+```powershell
+$env:THUMBNAIL_PRD_BACKFILL_STAGE = "prd"
+$env:THUMBNAIL_PRD_BACKFILL_SOURCE_BUCKET = "<owner-approved-source-bucket>"
+$env:THUMBNAIL_PRD_BACKFILL_SOURCE_REGION = "ap-northeast-1"
+$env:THUMBNAIL_PRD_BACKFILL_SOURCE_PREFIX = "<owner-approved-prefix>/"
+$env:THUMBNAIL_PRD_BACKFILL_DERIVED_BUCKET = "<configured-private-derived-bucket>"
+$env:THUMBNAIL_PRD_BACKFILL_DERIVED_REGION = "ap-southeast-1"
+$env:THUMBNAIL_PRD_BACKFILL_WASABI_ACCESS_KEY_ID = "<dedicated-backfill-access-key>"
+$env:THUMBNAIL_PRD_BACKFILL_WASABI_SECRET_ACCESS_KEY = "<dedicated-backfill-secret-key>"
+```
+
+The following examples are **NOT YET AUTHORIZED** for live or dry-run access to Wasabi. The default invocation is metadata-only and can inspect at most 10 objects; it lists the exact source prefix and may HEAD individually eligible source and derived objects. It does not GET source bodies, generate thumbnails, create a lock, or write local state. `--max-objects` is required and `--page-size` is bounded to 1-10 (default 5).
+
+```powershell
+# NOT YET AUTHORIZED — do not run against Wasabi until the owner approves B2-B3.
+npm run thumbnail:backfill:prd -- --source-bucket "<owner-approved-source-bucket>" --source-region "ap-northeast-1" --prefix "<owner-approved-prefix>/" --max-objects 2
+```
+
+Execution is a separate owner-controlled gate and requires both confirmation flags plus absolute checkpoint and append-only audit paths in a private directory outside the repository. Paths must be canonical, non-symlink paths; on POSIX, their directory and existing files must be user-private. Windows ACLs are still checked, but **live execution is refused on Windows** because this Node.js implementation cannot establish durable directory-entry syncing after checkpoint rename. Use a POSIX host with directory `fsync` support for live execution until a Windows-specific implementation and its crash behavior are verified. On supported POSIX filesystems, checkpoint data is synced before rename and the containing directory is synced after rename; a sync failure returns failure even though the rename may already be visible. This is a crash-resistance measure, not a guarantee against storage hardware or filesystem failures.
+
+The single production writer lock is stable across checkpoint names, is separate from the TEST lock, and prevents concurrency on this local machine only—not across machines. A stale lock fails closed and is never automatically taken over. The private JSON Lines audit is versioned and append-only. Before each conditional PUT, the tool durably records a `write-intent` with the scope fingerprint, event ID and v1 derived key. After the PUT, it appends `generated`, `not-generated` (a confirmed conditional-write race), or `unknown`. Checkpoint advancement follows a terminal processing result and its required audit events. If the process stops with an intent lacking an outcome, the next execution records `unknown` and stops before source listing. Any `unknown` outcome blocks future runs with those state files. A successful PUT followed by an outcome-append failure therefore cannot be retried and mislabeled as an ordinary `already-present` result. The tool does not claim exact attribution for an unresolved remote write. Existing audit files are validated before processing and before append; missing final newlines, partial records, malformed JSON, invalid transitions, or scope mismatches fail closed. The tool never truncates or repairs audit data automatically.
+
+**Recovery:** stop and preserve byte-for-byte private copies of both the checkpoint and audit file before any manual review; keep the originals unchanged. For a checkpoint durability error, pending/unknown intent, or malformed audit tail, do not reuse those state paths. After reviewing the archived evidence and accepting that the prior attempt remains unattributed, start a deliberate new scan from the beginning with new checkpoint and audit paths. Existing derived objects will be reported as `already-present`; this does not attribute them to the earlier attempt. Retain the original audit alongside the new audit for manual reconciliation. There is no automated rollback or deletion. Source originals are never modified.
+
+```sh
+# NOT YET AUTHORIZED — requires a separate owner approval; POSIX host required for live execution.
+npm run thumbnail:backfill:prd -- --source-bucket "<owner-approved-source-bucket>" --source-region "ap-northeast-1" --prefix "<owner-approved-prefix>/" --max-objects 2 --checkpoint "/private/wasabi-prd-checkpoint.json" --audit "/private/wasabi-prd-audit.jsonl" --execute --confirm-prd-backfill
+```
+
+The implementation preserves the v1 key and current thumbnail policy (maximum 512-pixel edge, WebP quality 80, supported standard image formats and CR2 embedded previews, 25 MiB source cap). NEF and HEIC/HEIF remain unsupported. Destination objects remain private. B2-B2 development and tests use injected mocks only; they do not authorize production access. The owner controls the later rollout gate, including any B2-B3 compatibility check, dry-run and first 1-2 photographs.
+
 ## Phase 8 Task 8C-A1 — Recorded findings (October 2026)
 
 The following findings summarize local, read-only inventory across **nine** existing source buckets and representative **local** thumbnail experiments. Figures are aggregate or anonymized: no private bucket names, full object keys, personal filenames, credentials, or photo samples are included. These are measurements and prototype results, **not** confirmation that production thumbnail generation is implemented.

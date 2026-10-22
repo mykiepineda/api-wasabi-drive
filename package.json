@@ -15,6 +15,7 @@
     "thumbnail:cr2:probe": "node scripts/thumbnail-cr2-probe.js",
     "thumbnail:pilot": "node scripts/thumbnail-single-pilot.js",
     "thumbnail:backfill:test": "node scripts/thumbnail-backfill-test.js",
+    "thumbnail:backfill:prd": "node scripts/thumbnail-backfill-prd.js",
     "thumbnail:preflight:prd": "node scripts/thumbnail-production-preflight.js",
     "start": "nodemon src/server.js",
     "deploy:test": "serverless deploy --stage test",

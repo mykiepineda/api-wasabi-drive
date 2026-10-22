@@ -1,0 +1,22 @@
+# Local, manually initiated Wasabi Drive production thumbnail backfill.
+# No API server, port exposure, credentials or deployment behavior.
+FROM node:24-bookworm-slim
+
+WORKDIR /app
+RUN chown node:node /app
+USER node
+
+COPY --chown=node:node package.json package-lock.json ./
+# The local thumbnail processor requires sharp and extract-raw-preview,
+# which are intentionally devDependencies in the existing repository.
+RUN npm ci --include=dev --no-audit --no-fund
+
+COPY --chown=node:node src/ ./src/
+COPY --chown=node:node scripts/ ./scripts/
+COPY --chown=node:node test/ ./test/
+
+# Keep both the writer lock and the checkpoint/audit under one persistent
+# Linux-backed volume, explicitly mounted at /state by the operator.
+ENV HOME=/state
+
+ENTRYPOINT ["node", "/app/scripts/thumbnail-backfill-prd.js"]

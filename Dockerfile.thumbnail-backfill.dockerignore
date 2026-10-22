@@ -1,0 +1,12 @@
+# Explicit allowlist for the Docker build context: do not send
+# .git, .env, credentials, personal photos or local reports to Docker.
+**
+!Dockerfile.thumbnail-backfill
+!package.json
+!package-lock.json
+!src/
+!src/**
+!scripts/
+!scripts/**
+!test/
+!test/**

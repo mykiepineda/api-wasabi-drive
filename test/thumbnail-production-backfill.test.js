@@ -11,6 +11,7 @@ const {
   PutObjectCommand,
 } = require("@aws-sdk/client-s3");
 const { createThumbnailKey } = require("../src/thumbnail/key");
+const { MAX_SOURCE_BYTES } = require("../src/thumbnail/policy");
 const { runProductionBackfill: runProductionBackfillImpl } = require("../src/thumbnail/production-backfill");
 const {
   loadProductionBackfillConfig,
@@ -844,6 +845,41 @@ test("CR2 retains preview eligibility while HEIC and NEF remain unsupported", as
   assert.equal(summary.examined, 3);
   assert.equal(summary.unsupported, 2);
   assert.equal(summary.category, "dry-run");
+});
+
+test("production backfill classifies oversized objects by thumbnail eligibility before size", async () => {
+  const oversizedSize = MAX_SOURCE_BYTES + 1;
+  const supportedFormats = ["cr2", "jfif", "jpeg", "jpg", "png", "webp"];
+  const items = [
+    makeItem(`${scope.prefix}oversized.jpg`, { Size: oversizedSize }),
+    makeItem(`${scope.prefix}oversized.cr2`, { Size: oversizedSize }),
+    makeItem(`${scope.prefix}oversized.mp4`, { Size: oversizedSize }),
+    makeItem(`${scope.prefix}oversized.nef`, { Size: oversizedSize }),
+    ...supportedFormats.map((extension) => makeItem(
+      `${scope.prefix}within-limit.${extension}`,
+      { Size: MAX_SOURCE_BYTES },
+    )),
+  ].sort((left, right) => left.Key.localeCompare(right.Key));
+  const { storage } = storageFor([{ Contents: items, IsTruncated: false }]);
+  const generatedKeys = [];
+  const summary = await runProductionBackfill({
+    scope,
+    storage,
+    maxObjects: items.length,
+    pageSize: items.length,
+    dryRun: true,
+    generate: async ({ sourceKey }) => {
+      generatedKeys.push(sourceKey);
+      return { category: "dry-run", count: 1 };
+    },
+  });
+
+  assert.equal(summary.examined, items.length);
+  assert.equal(summary.oversize, 2);
+  assert.equal(summary.unsupported, 2);
+  assert.deepEqual(generatedKeys, supportedFormats.map(
+    (extension) => `${scope.prefix}within-limit.${extension}`,
+  ));
 });
 
 test("audit failure and checkpoint failure never advance past an unsettled object", async (t) => {

@@ -693,7 +693,6 @@ const classifyObject = async ({
   const size = object.Size;
   if (!Number.isSafeInteger(size) || size < 0) return { category: "failed", count: 1 };
   if (size === 0) return { category: "unsupported", count: 1 };
-  if (size > MAX_SOURCE_BYTES) return { category: "oversize", count: 1 };
   const eligibility = evaluateThumbnailEligibility({
     size,
     extension: key.slice(key.lastIndexOf("/") + 1).split(".").pop().toLowerCase(),
@@ -703,6 +702,7 @@ const classifyObject = async ({
     etag: '"valid-etag"',
   });
   if (!eligibility.eligible) return { category: "unsupported", count: 1 };
+  if (size > MAX_SOURCE_BYTES) return { category: "oversize", count: 1 };
   if (typeof object.ETag !== "string" || !normalizeEtag(object.ETag)) {
     return { category: "failed", count: 1 };
   }

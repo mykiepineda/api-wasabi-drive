@@ -70,6 +70,34 @@ const parseCommaSeparatedValues = (value) => {
   return Object.freeze(uniqueEntries);
 };
 
+const parseExactList = (name, value, validateEntry) => {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return Object.freeze([]);
+  }
+
+  const entries = String(value).split(",").map((entry) => entry.trim());
+  const seen = new Set();
+
+  for (const entry of entries) {
+    if (!entry || !validateEntry(entry)) {
+      throw new Error(`Invalid ${name} value.`);
+    }
+    if (seen.has(entry)) {
+      throw new Error(`Duplicate ${name} value.`);
+    }
+    seen.add(entry);
+  }
+
+  return Object.freeze(entries);
+};
+
+const isValidBucketName = (value) =>
+  value.length >= 3
+  && value.length <= 63
+  && /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(value)
+  && !value.includes("..")
+  && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value);
+
 const isValidReleaseSha = (value) => {
   if (typeof value !== "string") {
     return false;
@@ -95,18 +123,22 @@ const parseBoolean = (value) => {
 };
 
 const parseThumbnailKeys = (value) => {
-  const entries = parseCommaSeparatedValues(value);
+  const entries = parseExactList(
+    "THUMBNAIL_API_ALLOWED_KEYS",
+    value,
+    (entry) => /^v1\/([0-9a-f]{2})\/([0-9a-f]{64})\.webp$/i.test(entry),
+  );
   const validEntries = [];
   const seen = new Set();
 
   for (const entry of entries) {
-    if (!/^v1\/[0-9a-f]{2}\/[0-9a-f]{64}\.webp$/i.test(entry)) {
-      throw new Error(`Invalid THUMBNAIL_API_ALLOWED_KEYS value: ${entry}`);
-    }
-
     const normalizedEntry = entry.toLowerCase();
+    const [, shard, digest] = normalizedEntry.match(/^v1\/([0-9a-f]{2})\/([0-9a-f]{64})\.webp$/);
+    if (shard !== digest.slice(0, 2)) {
+      throw new Error("THUMBNAIL_API_ALLOWED_KEYS contains a key with a mismatched shard.");
+    }
     if (seen.has(normalizedEntry)) {
-      throw new Error(`Duplicate THUMBNAIL_API_ALLOWED_KEYS value: ${entry}`);
+      throw new Error("Duplicate THUMBNAIL_API_ALLOWED_KEYS value.");
     }
     seen.add(normalizedEntry);
     validEntries.push(normalizedEntry);
@@ -138,34 +170,67 @@ const parseThumbnailApiConfig = () => {
   const allowedKeys = parseThumbnailKeys(process.env.THUMBNAIL_API_ALLOWED_KEYS);
   const accessKeyId = process.env.THUMBNAIL_API_READ_ACCESS_KEY_ID?.trim();
   const secretAccessKey = process.env.THUMBNAIL_API_READ_SECRET_ACCESS_KEY?.trim();
-  const ttlSeconds = Number.parseInt(process.env.THUMBNAIL_API_URL_TTL_SECONDS, 10);
+  const ttlValue = process.env.THUMBNAIL_API_URL_TTL_SECONDS;
+  const ttlSeconds = typeof ttlValue === "string" && /^\d+$/.test(ttlValue.trim())
+    ? Number(ttlValue.trim())
+    : NaN;
 
-  if (!sourceBucket || !sourceRegion || !sourcePrefix || !derivedBucket || !derivedRegion || !accessKeyId || !secretAccessKey) {
+  if (!sourceBucket || !sourceRegion || !sourcePrefix || !derivedBucket || !derivedRegion || !accessKeyId || !secretAccessKey || allowedKeys.length === 0) {
     throw new Error("THUMBNAIL_API_ENABLED requires all thumbnail API environment variables to be configured.");
   }
 
-  if (!sourcePrefix.endsWith("/")) {
+  if (!isValidBucketName(sourceBucket) || !isValidBucketName(derivedBucket)) {
+    throw new Error("Thumbnail API source and derived buckets must be valid exact bucket names.");
+  }
+  if (
+    sourcePrefix === "/"
+    || sourcePrefix.startsWith("/")
+    || sourcePrefix.includes("*")
+    || sourcePrefix.includes("?")
+    || !sourcePrefix.endsWith("/")
+    || sourcePrefix.includes("\\")
+    || sourcePrefix.includes("//")
+    || sourcePrefix.split("/").some((part) => part === "." || part === "..")
+  ) {
     throw new Error("THUMBNAIL_API_SOURCE_PREFIX must be a non-empty slash-terminated prefix.");
   }
 
   if (!SUPPORTED_WASABI_REGIONS.has(sourceRegion)) {
     throw new Error(`Unsupported THUMBNAIL_API_SOURCE_REGION value: ${sourceRegion}`);
   }
-  if (!SUPPORTED_WASABI_REGIONS.has(derivedRegion)) {
-    throw new Error(`Unsupported THUMBNAIL_API_DERIVED_REGION value: ${derivedRegion}`);
+  if (derivedRegion !== "ap-southeast-1") {
+    throw new Error("THUMBNAIL_API_DERIVED_REGION must be ap-southeast-1.");
   }
 
-  if (sourceBucket === derivedBucket) {
-    throw new Error("THUMBNAIL_API_SOURCE_BUCKET and THUMBNAIL_API_DERIVED_BUCKET must differ.");
+  const stage = process.env.DEPLOYMENT_STAGE?.trim().toLowerCase();
+  if (!["test", "prd"].includes(stage)) {
+    throw new Error("THUMBNAIL_API_ENABLED requires DEPLOYMENT_STAGE to be test or prd.");
+  }
+  if (stage === "prd" && sourceRegion !== "ap-northeast-1") {
+    throw new Error("The prd thumbnail source region must be ap-northeast-1.");
+  }
+  if (stage === "test" && sourceRegion === "ap-northeast-1") {
+    throw new Error("The test thumbnail source region must not use the prd Tokyo region.");
   }
   if (sourceRegion === derivedRegion) {
-    throw new Error("THUMBNAIL_API_SOURCE_REGION and THUMBNAIL_API_DERIVED_REGION must differ.");
+    throw new Error("The thumbnail source and derived regions must differ.");
+  }
+  if (sourceBucket === derivedBucket) {
+    throw new Error("THUMBNAIL_API_SOURCE_BUCKET and THUMBNAIL_API_DERIVED_BUCKET must differ.");
   }
   if (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 3600) {
     throw new Error("THUMBNAIL_API_URL_TTL_SECONDS must be an integer between 60 and 3600 seconds.");
   }
 
-  const internalBuckets = parseCommaSeparatedValues(process.env.WASABI_INTERNAL_BUCKETS);
+  if (accessKeyId === process.env.WASABI_ACCESS_KEY_ID?.trim()) {
+    throw new Error("Thumbnail API read credentials must be distinct from the original Wasabi identity.");
+  }
+
+  const internalBuckets = parseExactList(
+    "WASABI_INTERNAL_BUCKETS",
+    process.env.WASABI_INTERNAL_BUCKETS,
+    isValidBucketName,
+  );
   if (internalBuckets.length === 0 || !internalBuckets.includes(derivedBucket)) {
     throw new Error("WASABI_INTERNAL_BUCKETS must include the configured THUMBNAIL_API_DERIVED_BUCKET.");
   }
@@ -197,8 +262,20 @@ if (trustedUserObjectIds.length === 0) {
   throw new Error("Missing ENTRA_TRUSTED_USER_OBJECT_IDS configuration.");
 }
 
-const internalBuckets = parseCommaSeparatedValues(process.env.WASABI_INTERNAL_BUCKETS);
+const internalBuckets = parseExactList(
+  "WASABI_INTERNAL_BUCKETS",
+  process.env.WASABI_INTERNAL_BUCKETS,
+  isValidBucketName,
+);
 const thumbnailApi = parseThumbnailApiConfig();
+const deploymentStage = process.env.DEPLOYMENT_STAGE?.trim().toLowerCase();
+
+if (deploymentStage && !["test", "prd"].includes(deploymentStage)) {
+  throw new Error("DEPLOYMENT_STAGE must be test or prd when set.");
+}
+if (deploymentStage && internalBuckets.length === 0) {
+  throw new Error("WASABI_INTERNAL_BUCKETS must be configured for deployed test/prd stages.");
+}
 
 const config = {
   port: process.env.PORT || 8080,

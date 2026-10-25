@@ -15,6 +15,8 @@ const createThumbnailApiWasabiStorage = ({
   accessKeyId,
   secretAccessKey,
   urlTtlSeconds = 3600,
+  createClient = (options) => new S3Client(options),
+  signUrl = getSignedUrl,
 } = {}) => {
   if (typeof bucket !== "string" || !bucket.trim()) {
     throw new ThumbnailApiWasabiError("Thumbnail API derived bucket is required.");
@@ -31,9 +33,11 @@ const createThumbnailApiWasabiStorage = ({
 
   const normalizedBucket = bucket.trim();
   const normalizedRegion = region.trim();
-  const ttl = Number.isInteger(urlTtlSeconds) ? urlTtlSeconds : 3600;
+  if (!Number.isInteger(urlTtlSeconds) || urlTtlSeconds < 60 || urlTtlSeconds > 3600) {
+    throw new ThumbnailApiWasabiError("Thumbnail API URL TTL must be between 60 and 3600 seconds.");
+  }
 
-  const client = new S3Client({
+  const client = createClient({
     endpoint: endpointForRegion(normalizedRegion),
     region: normalizedRegion,
     credentials: {
@@ -43,21 +47,18 @@ const createThumbnailApiWasabiStorage = ({
   });
 
   return Object.freeze({
-    async getObjectAccessUrl({ Bucket = normalizedBucket, Key, expiresIn = ttl } = {}) {
-      if (typeof Key !== "string" || !Key.trim()) {
-        throw new ThumbnailApiWasabiError("Thumbnail API object key is required.");
-      }
-      if (typeof Bucket !== "string" || !Bucket.trim()) {
-        throw new ThumbnailApiWasabiError("Thumbnail API bucket is required.");
-      }
-
-      const expires = Number(expiresIn);
-      if (!Number.isInteger(expires) || expires < 1 || expires > 3600) {
-        throw new ThumbnailApiWasabiError("Thumbnail API URL TTL must be between 1 and 3600 seconds.");
+    async getObjectAccessUrl({ Key } = {}) {
+      if (
+        typeof Key !== "string"
+        || Key !== Key.toLowerCase()
+        || !/^v1\/([0-9a-f]{2})\/([0-9a-f]{64})\.webp$/i.test(Key)
+        || Key.split("/")[1].toLowerCase() !== Key.split("/")[2].slice(0, 2).toLowerCase()
+      ) {
+        throw new ThumbnailApiWasabiError("Thumbnail API object key is invalid.");
       }
 
-      return getSignedUrl(client, new GetObjectCommand({ Bucket, Key }), {
-        expiresIn: expires,
+      return signUrl(client, new GetObjectCommand({ Bucket: normalizedBucket, Key }), {
+        expiresIn: urlTtlSeconds,
       });
     },
   });

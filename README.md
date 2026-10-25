@@ -36,6 +36,18 @@ To roll back, identify a known-good commit on `master` and rerun **Backend Produ
 
 Rollback to a commit predating the health/deployment-smoke capability may successfully redeploy the older application but fail the current workflow's post-deployment smoke step because that source does not expose `/health` or support the `deployment-smoke` scope. In that case, verify the rollback manually. After this capability has been production-validated, prefer a known-good SHA that includes it.
 
+## Phase 8C-D1 — Scoped private thumbnail URLs
+
+The backend can optionally add `ThumbnailAccessUrl` to authorized object-list results for exact, approved v1 derivative keys. The existing original `AccessUrl`, pagination, and object metadata remain unchanged. Enrichment is disabled by default; this implementation does not enable production access or perform thumbnail existence checks.
+
+Configure each protected GitHub Environment (`test` and `prd`) independently. `WASABI_INTERNAL_BUCKETS` is required as a nonempty exact bucket-name list for every deployed stage, even while thumbnail enrichment is disabled; it filters those buckets from bucket results and blocks direct region/object browsing. The deployment workflow validates centralized configuration locally before Serverless runs. Local/mock operation without `DEPLOYMENT_STAGE` may omit the internal list, but must not be treated as a deployment configuration.
+
+When explicitly enabled, provide the environment's source bucket, source region, slash-terminated private prefix, derived bucket, Singapore derived region (`ap-southeast-1`), exact verified allowlist (up to 13 v1 keys), dedicated read access-key pair, and URL lifetime. PRD source scope is Tokyo (`ap-northeast-1`); TEST must not use that production source region. Store the source bucket/prefix and exact allowlist, plus both credential pairs, in that stage's protected Environment secrets; keep non-secret regions, bucket configuration and the enablement switch in its Environment variables. The dedicated derived identity must be separate from the API identity and have only `s3:GetObject` on the approved private derivative scope. The signer uses that explicit identity and the fixed derived bucket/region; it has no write, delete, list, or default-credential fallback. Browsing signs only listing candidates that pass source identity, eligibility, and exact allowlist checks. Before approval, verify the actual stage configuration's Serverless variable resolution and Lambda environment-size budget without printing secret values.
+
+Keep `THUMBNAIL_API_ENABLED=false` in both environments until the separate TEST source and private TEST derivatives, dedicated read credentials, source scope, and exact TEST keys are approved. Validate TEST before any PRD promotion. PRD enablement additionally waits for independent read-only verification and reconciliation of the final five objects into the approved 13-key set. Before rollout, an owner-authorized read-only validation must retrieve a genuine signed private WebP, confirm the original `AccessUrl` still works, confirm anonymous raw-object access fails, and confirm unprocessed objects receive no thumbnail URL; a generated URL alone is not sufficient. No live validation is authorized by this documentation.
+
+For rollback, set the stage's `THUMBNAIL_API_ENABLED=false` and redeploy through its existing controlled workflow. Retain `WASABI_INTERNAL_BUCKETS` protection if possible. Do not delete derivatives or alter backfill state.
+
 ## Phase 8 Task 8C-A1 - Thumbnail evidence tools
 
 These local tools gather evidence only. The inventory requests object-list metadata from explicitly named Wasabi buckets and does not download or modify source objects. Its broad candidate-image extensions are for measurement, not an approved thumbnail eligibility policy. The thumbnail prototype reads a local image and writes a separate WebP output.
@@ -200,9 +212,9 @@ This proves feasibility for the sampled CR2, **not** that a Node.js / Linux Lamb
 - **CR2:** In scope for eventual derived thumbnails because equivalent separate JPEGs are not available for these files. Prefer the larger embedded `PreviewImage` when usable; investigate a suitable runtime extraction method before committing to an ExifTool/RAW dependency.
 - **HEIC/HEIF:** Present in inventory but not tested against the target worker build. Do not assume support or let it block normal photo thumbnails.
 - **JFIF:** Locally decodable as JPEG; final format/eligibility policy is still to be established in A2.
-- **Safety:** Originals stay authoritative and private. A1 contains only read-only storage metadata tooling and local-file prototypes—no thumbnail bucket writes, SNS/Lambda worker, backfill, API `ThumbnailAccessUrl`, or frontend thumbnail rendering.
+- **Safety (historical A1 scope):** Originals stay authoritative and private. A1 contained only read-only storage metadata tooling and local-file prototypes—no thumbnail bucket writes, SNS/Lambda worker, backfill, API `ThumbnailAccessUrl`, or frontend thumbnail rendering. Phase 8C-D1 later added the optional backend URL field described above; it adds no storage-write path.
 
-**Next gate:** Merge/review A1 as an evidence-only change. Task 8C-A2 will define the deterministic versioned key, centralized eligibility policy, reusable service boundary, and a production-compatible CR2-preview strategy in a separate focused change. Backfill, event automation, and frontend/API integration remain later tasks and require separate approval.
+**Historical next gate:** A1 was followed by A2, which defined the deterministic key, eligibility policy, and reusable service boundary. Backfill safeguards remain separate; event automation and frontend rendering are outside Phase 8C-D1 and require separate approval.
 
 ## Phase 8 Task 8C-A2 — Durable Thumbnail Foundation
 
@@ -224,7 +236,7 @@ The `transformToWebp` utility follows the validated prototype settings: maximum 
 
 ### Memory and CR2 gate
 
-The A2 service remains in-memory only. It accepts source bytes in a Buffer and returns the derived WebP bytes plus metadata. This is a deliberate design for local foundation work, but the future worker must evaluate memory limits and payload size before processing large or exotic source files, especially CR2 preview extraction and large RAW previews. Standard-image support is complete and verified.
+The A2 service remains in-memory only. It accepts source bytes in a Buffer and returns the derived WebP bytes plus metadata. At the time of A2, this was a local-only foundation; Phase 8C-D1 later integrated optional URL signing for already-created allowlisted derivatives. Any future worker must evaluate memory limits and payload size before processing large or exotic source files, especially CR2 preview extraction and large RAW previews. Standard-image support is complete and verified.
 
 The local-only `extract-raw-preview@1.1.0` experiment successfully selected an embedded JPEG from the representative local Canon CR2 sample: 5472 × 3648 pixels and 2,746,504 bytes. Compatibility was demonstrated locally on Node.js 24. The CR2's IFD0 Orientation is 8, while the extracted JPEG has no Orientation tag, so the initial 512 × 341 WebP was sideways. The local probe reads the bounded TIFF IFD0 Orientation and uses it only when the extracted preview has no orientation of its own; preview EXIF orientation takes precedence. The corrected output was 341 × 512 pixels (41,620 bytes), visually confirmed upright. This validates the representative sample only, not all CR2 files or Linux packaging.
 
@@ -242,7 +254,7 @@ The script prints sanitized JSON only: success/failure category, selected embedd
 - Do not import backend config or storage credentials in the thumbnail utility layer.
 - Keep Sharp and the CR2 preview extractor in development dependencies; Linux worker packaging is not yet validated.
 - Return structured nonfatal results for unsupported inputs instead of throwing for ordinary cases.
-- Preserve current API contracts and original `AccessUrl` semantics; this change does not add a `ThumbnailAccessUrl` or storage-write path.
+- At the A2 milestone, the API had no `ThumbnailAccessUrl`; Phase 8C-D1 later added the optional field while preserving original `AccessUrl` semantics and adding no storage-write path.
 - The lightweight `src/thumbnail/index.js` remains separate from the processing service and its Sharp/CR2 dependencies.
 
 ## Phase 8 Task 8C-A3 — In-Memory CR2 Service Integration
@@ -255,7 +267,7 @@ The owner completed the real-file main-service validation locally with Node.js 2
 node scripts/thumbnail-cr2-service-smoke.js "<local-file.CR2>"
 ```
 
-The command uses synthetic identity metadata and prints only eligibility, reason, output dimensions, byte count, and content type. NEF, HEIC/HEIF, unsupported CR2 variants, other RAW formats, and documents/video remain deferred or unsupported. Private derived Wasabi writes/backfill, SNS/Lambda processing, API `ThumbnailAccessUrl`, and React grid integration are not implemented. Linux Lambda packaging, worker memory requirements, and compatibility across CR2 variants are not yet proven.
+The command uses synthetic identity metadata and prints only eligibility, reason, output dimensions, byte count, and content type. NEF, HEIC/HEIF, unsupported CR2 variants, other RAW formats, and documents/video remain deferred or unsupported. Private derived Wasabi writes/backfill and SNS/Lambda processing remain separate; API `ThumbnailAccessUrl` signing is now covered by Phase 8C-D1, while React grid integration remains out of scope. Linux Lambda packaging, worker memory requirements, and compatibility across CR2 variants are not yet proven.
 
 ## Phase 8 Task 8C-B1 — One-Object TEST Thumbnail Pilot
 

@@ -180,6 +180,7 @@ const loadApp = (override = undefined) => {
     ENTRA_API_CLIENT_ID: "api-client-id",
     ENTRA_REQUIRED_SCOPE: "WasabiDrive.Access",
     ENTRA_TRUSTED_USER_OBJECT_IDS: trustedUserObjectId,
+    WASABI_INTERNAL_BUCKETS: "synthetic-internal",
   });
   clearModules();
   if (override) {

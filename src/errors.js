@@ -23,7 +23,15 @@ class StorageProviderError extends Error {
   }
 }
 
+class NotFoundError extends Error {
+  constructor(message = "Not Found") {
+    super(message);
+    this.name = "NotFoundError";
+  }
+}
+
 module.exports = {
   InputValidationError,
+  NotFoundError,
   StorageProviderError,
 };

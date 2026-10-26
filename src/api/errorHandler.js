@@ -1,4 +1,4 @@
-const { InputValidationError, StorageProviderError } = require("../errors");
+const { InputValidationError, NotFoundError, StorageProviderError } = require("../errors");
 
 const parserResponses = new Map([
   ["entity.parse.failed:400", [400, "Bad Request"]],
@@ -13,6 +13,10 @@ const parserResponses = new Map([
 const getPublicResponse = (error) => {
   if (error instanceof InputValidationError) {
     return [400, "MaxKeys must be an integer between 1 and 1000."];
+  }
+
+  if (error instanceof NotFoundError) {
+    return [404, "Not Found"];
   }
 
   if (error instanceof StorageProviderError) {

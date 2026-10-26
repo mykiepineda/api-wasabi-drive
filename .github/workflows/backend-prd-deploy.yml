@@ -102,11 +102,26 @@ jobs:
           WASABI_REGION: ${{ vars.WASABI_REGION }}
           WASABI_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
           WASABI_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+          WASABI_INTERNAL_BUCKETS: ${{ vars.WASABI_INTERNAL_BUCKETS }}
+
+          THUMBNAIL_API_ENABLED: ${{ vars.THUMBNAIL_API_ENABLED || 'false' }}
+          THUMBNAIL_API_SOURCE_BUCKET: ${{ secrets.THUMBNAIL_API_SOURCE_BUCKET }}
+          THUMBNAIL_API_SOURCE_REGION: ${{ vars.THUMBNAIL_API_SOURCE_REGION }}
+          THUMBNAIL_API_SOURCE_PREFIX: ${{ secrets.THUMBNAIL_API_SOURCE_PREFIX }}
+          THUMBNAIL_API_DERIVED_BUCKET: ${{ vars.THUMBNAIL_API_DERIVED_BUCKET }}
+          THUMBNAIL_API_DERIVED_REGION: ${{ vars.THUMBNAIL_API_DERIVED_REGION }}
+          THUMBNAIL_API_ALLOWED_KEYS: ${{ secrets.THUMBNAIL_API_ALLOWED_KEYS }}
+          THUMBNAIL_API_READ_ACCESS_KEY_ID: ${{ secrets.THUMBNAIL_API_READ_ACCESS_KEY_ID }}
+          THUMBNAIL_API_READ_SECRET_ACCESS_KEY: ${{ secrets.THUMBNAIL_API_READ_SECRET_ACCESS_KEY }}
+          THUMBNAIL_API_URL_TTL_SECONDS: ${{ vars.THUMBNAIL_API_URL_TTL_SECONDS || '3600' }}
+
           ENTRA_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
           ENTRA_API_CLIENT_ID: ${{ vars.ENTRA_API_CLIENT_ID }}
           ENTRA_REQUIRED_SCOPE: ${{ vars.ENTRA_REQUIRED_SCOPE }}
           ENTRA_TRUSTED_USER_OBJECT_IDS: ${{ vars.ENTRA_TRUSTED_USER_OBJECT_IDS }}
-        run: npm run deploy:prd
+        run: |
+          DEPLOYMENT_STAGE=prd node -e 'require("./src/config")'
+          npm run deploy:prd
 
       - name: Verify deployed API
         env:

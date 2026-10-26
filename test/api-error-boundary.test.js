@@ -9,7 +9,7 @@ const servicePath = require.resolve("../src/service/buckets");
 const accessTokenPath = require.resolve("../src/authentication/requireEntraAccessToken");
 const trustedUserPath = require.resolve("../src/authentication/requireTrustedUser");
 const parseMaxKeys = require("../src/api/parseMaxKeys");
-const { InputValidationError } = require("../src/errors");
+const { InputValidationError, NotFoundError } = require("../src/errors");
 const originalEnvironment = { ...process.env };
 const trustedObjectId = "11111111-2222-4222-8aaa-555555666666";
 
@@ -36,6 +36,7 @@ const loadApp = () => {
     ENTRA_API_CLIENT_ID: "api-client-id",
     ENTRA_REQUIRED_SCOPE: "WasabiDrive.Access",
     ENTRA_TRUSTED_USER_OBJECT_IDS: trustedObjectId,
+    WASABI_INTERNAL_BUCKETS: "synthetic-internal",
   });
   clearModules();
   serviceCalls = 0;
@@ -80,6 +81,10 @@ const loadApp = () => {
     exports: {
       createRequireEntraAccessToken: () => (req, res, next) => {
         const authorization = req.headers.authorization;
+        if (authorization === "synthetic-trusted-auth") {
+          req.auth = { oid: trustedObjectId, tid: "tenant-id" };
+          return next();
+        }
         if (authorization === "Bearer verifier-failure") {
           return next(new Error("verifier private detail"));
         }
@@ -239,6 +244,20 @@ test("authentication and authorization responses precede MaxKeys validation", as
     assertJsonResponse(response, expectedStatus, expectedBody);
   }
   assert.equal(serviceCalls, 0);
+});
+
+test("internal bucket route requests return sanitized 404 responses", async () => {
+  const app = loadApp();
+  serviceFailure = new NotFoundError();
+
+  for (const path of [
+    "/buckets/internal-derived/region",
+    "/buckets/internal-derived/objects/photos/synthetic.jpg",
+  ]) {
+    const response = await request(app, path, { headers: { Authorization: "synthetic-trusted-auth" } });
+    assertJsonResponse(response, 404, { error: "Not Found" });
+  }
+  assert.equal(serviceCalls, 2);
 });
 
 test("unexpected errors and verifier failures are fixed 500 responses without leakage", async () => {

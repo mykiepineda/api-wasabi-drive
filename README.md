@@ -28,6 +28,10 @@ Pull requests to `master` run backend CI. After a change is merged to `master`, 
 
 After deployment, the test workflow automatically runs the non-destructive deployment smoke checks: `/health` returns 200 and unauthenticated `/buckets/` returns 401. Production promotion runs the same checks after deployment. The full authenticated Bruno regression remains a manual gate against `test`; its scope is blocked from `prd`.
 
+To manually redeploy the current `master` to TEST and apply previously configured TEST Environment variables or secrets, open **Actions** → **Backend Test Deployment** → **Run workflow**, select `master` in the branch selector, then choose **Run workflow**. The workflow runs its tests, deploys using the protected `test` Environment, and performs the deployment smoke checks. A dispatch from any branch other than `master` cannot deploy. Merging this workflow change to `master` will itself trigger the existing automatic TEST deployment, so keep `THUMBNAIL_API_ENABLED=false` until the owner explicitly approves TEST thumbnail enablement.
+
+To roll back TEST thumbnail enrichment, set `THUMBNAIL_API_ENABLED=false` in the protected `test` Environment and manually run **Backend Test Deployment** again from `master`. Preserve `WASABI_INTERNAL_BUCKETS` protection.
+
 Production promotion is manual through the **Backend Production Promotion** workflow. Start it from `master` and provide the exact full 40-character commit SHA that was deployed to and validated in `test`. The workflow verifies that the commit belongs to `master`, checks out that exact commit, and runs `npm ci` and `npm test` before deployment. The GitHub Environment `prd` is the production protection boundary and can require approval.
 
 GitHub OIDC and AWS STS provide short-lived AWS deployment credentials. No permanent AWS deployment access keys are stored in GitHub. The production workflow runs the existing `npm run deploy:prd` command; production configuration is supplied through the protected `prd` environment.

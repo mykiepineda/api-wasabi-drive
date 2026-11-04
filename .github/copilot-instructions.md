@@ -35,7 +35,7 @@ These instructions replace the backend repository's stale `.github/copilot-instr
 
 Existing reference code:
 
-- `scripts/prototype-thumbnail.js`: local CLI `thumbnail:prototype` supports `--max-edge` and `--quality`.
+- `scripts/prototype-thumbnail.js`: local CLI `thumbnail:prototype` supports `--max-edge`, `--quality`, and optional paired crop dimensions.
 - `src/thumbnail/prototype.js`: local Sharp `.rotate().resize(maxEdge,maxEdge,{fit:'inside',withoutEnlargement:true}).webp({quality})` and result statistics.
 - `test/thumbnail.prototype.test.js`: existing local-only prototype tests.
 - `src/thumbnail/transform.js`, `src/thumbnail/service.js` and the production backfill **must retain the `v1` generation policy unchanged** for this task.
@@ -43,7 +43,7 @@ Existing reference code:
 Implement **only after the owner asks Copilot to implement the focused prompt**:
 
 1. Add backward-compatible optional local CLI crop arguments `--crop-width <pixels>` and `--crop-height <pixels>` to the existing `thumbnail:prototype` script, with both required together and mutually exclusive with an explicitly provided `--max-edge`. The no-crop invocation must remain unchanged: max edge 512, quality 80, preserve aspect ratio, no upscaling.
-2. In crop mode use Sharp's `fit: 'cover'`, `position: 'centre'`, auto-orientation, output WebP, no enlargement and unchanged quality validation. Preserve the input image and avoid writing outside the caller-chosen output path. Reject incomplete, invalid or ambiguous options. Keep reasonable, explicit numeric bounds; do not build a general image pipeline or introduce arbitrary production recipe overrides.
+2. In crop mode use Sharp's `fit: 'cover'`, `position: 'centre'`, auto-orientation, output WebP, no enlargement and unchanged quality validation. Crop dimensions must be positive integers no greater than 10000. Preserve the input image and avoid writing outside the caller-chosen output path. Reject incomplete, invalid or ambiguous options; do not build a general image pipeline or introduce arbitrary production recipe overrides.
 3. Maintain existing CLI result fields; report actual output width/height/bytes and optionally a clear `mode` field. Do not falsely claim that `withoutEnlargement` always produces exact requested dimensions for tiny input images; the output can be smaller. Explain this exception.
 4. Add focused tests for the unchanged existing path, landscape/portrait cropping, actual dimensions and centre alignment (using synthetic colour sections if suitable), EXIF orientation where relevant, no enlargement, invalid pair/size/quality options, source/destination path protection, and backwards compatibility. Keep tests deterministic and synthetic.
 5. Preferred edit scope: `.github/copilot-instructions.md`, `scripts/prototype-thumbnail.js`, `src/thumbnail/prototype.js`, `test/thumbnail.prototype.test.js`. Small README updates only if necessary and owner approved. Do not modify API, config, signer, key identity, production transformer, production backfill, Docker, infrastructure, frontend, or deployment workflows.

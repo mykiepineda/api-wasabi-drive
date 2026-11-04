@@ -8,6 +8,7 @@ jspm_packages
 .env
 .env.test
 .env.prd
+.env.local
 
 # Bruno test reports
 bruno-results.xml

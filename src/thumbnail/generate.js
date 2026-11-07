@@ -1,6 +1,12 @@
 const { createThumbnailKey, normalizeEtag } = require("./key");
 const { evaluateThumbnailEligibility } = require("./eligibility");
 const { applyThumbnailPolicy } = require("./service");
+const {
+  DEFAULT_THUMBNAIL_RECIPE_ID,
+  V2_THUMBNAIL_HEIGHT,
+  V2_THUMBNAIL_WIDTH,
+  isSupportedThumbnailRecipe,
+} = require("./transform");
 const { MAX_SOURCE_BYTES, ThumbnailStorageError } = require("../storage/thumbnail-wasabi");
 
 const extensionFromKey = (key) => {
@@ -26,6 +32,7 @@ const generateThumbnailForObject = async ({
   applyPolicy = applyThumbnailPolicy,
   expectedEtag,
   expectedSize,
+  recipeId = DEFAULT_THUMBNAIL_RECIPE_ID,
   recordWriteIntent,
   recordWriteOutcome,
 }) => {
@@ -38,6 +45,9 @@ const generateThumbnailForObject = async ({
   }
   if (!storage || typeof storage.headSource !== "function" || typeof storage.headDerived !== "function") {
     return failure("failed", "invalid-storage-configuration");
+  }
+  if (!isSupportedThumbnailRecipe(recipeId)) {
+    return failure("unsupported", "unsupported-thumbnail-recipe");
   }
 
   try {
@@ -77,6 +87,7 @@ const generateThumbnailForObject = async ({
       sourceBucket,
       completeSourceKey: sourceKey,
       normalizedETag: normalizedEtag,
+      formatVersion: recipeId,
     });
     const alreadyPresent = await storage.headDerived({
       bucket: destinationBucket,
@@ -108,11 +119,12 @@ const generateThumbnailForObject = async ({
       sourceBytes,
       extension: extensionFromKey(sourceKey),
       size: metadata.size,
+      recipeId,
     });
     if (!result?.eligible) {
       return failure(
         result?.reason === "thumbnail-generation-failed" ? "failed" : "unsupported",
-        "thumbnail-unavailable",
+        result?.reason === "thumbnail-source-too-small" ? result.reason : "thumbnail-unavailable",
       );
     }
     if (
@@ -124,6 +136,10 @@ const generateThumbnailForObject = async ({
       || !Number.isSafeInteger(result.dimensions?.height)
       || result.dimensions.width <= 0
       || result.dimensions.height <= 0
+      || (
+        recipeId === "v2"
+        && (result.dimensions.width !== V2_THUMBNAIL_WIDTH || result.dimensions.height !== V2_THUMBNAIL_HEIGHT)
+      )
     ) {
       return failure("failed", "invalid-thumbnail-result");
     }

@@ -81,8 +81,7 @@ const main = async (args) => {
 
     const webp = await transformToWebp({
       input: preview.buffer,
-      maxEdge: 512,
-      quality: 80,
+      recipeId: "v1",
       fallbackOrientation: preview.fallbackOrientation,
     });
     if (options.outputPath) {

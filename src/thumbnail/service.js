@@ -1,10 +1,16 @@
 const { createThumbnailKey, normalizeEtag } = require("./key");
 const { evaluateThumbnailEligibility } = require("./eligibility");
 const cr2 = require("./cr2");
-const { transformToWebp } = require("./transform");
+const {
+  DEFAULT_MAX_EDGE,
+  DEFAULT_QUALITY,
+  DEFAULT_THUMBNAIL_RECIPE_ID,
+  isSupportedThumbnailRecipe,
+  transformToWebp,
+} = require("./transform");
 
-const FIXED_THUMBNAIL_MAX_EDGE = 512;
-const FIXED_THUMBNAIL_QUALITY = 80;
+const FIXED_THUMBNAIL_MAX_EDGE = DEFAULT_MAX_EDGE;
+const FIXED_THUMBNAIL_QUALITY = DEFAULT_QUALITY;
 
 const applyThumbnailPolicy = async ({
   region,
@@ -15,9 +21,21 @@ const applyThumbnailPolicy = async ({
   extension,
   format,
   size,
+  recipeId = DEFAULT_THUMBNAIL_RECIPE_ID,
   maxEdge,
   quality,
 }) => {
+  if (!isSupportedThumbnailRecipe(recipeId)) {
+    return {
+      eligible: false,
+      reason: "unsupported-thumbnail-recipe",
+      derivedKey: null,
+      dimensions: null,
+      contentType: null,
+      bytes: null,
+    };
+  }
+
   if (!Buffer.isBuffer(sourceBytes)) {
     return {
       eligible: false,
@@ -84,8 +102,7 @@ const applyThumbnailPolicy = async ({
 
     const transformed = await transformToWebp({
       input: transformInput,
-      maxEdge: FIXED_THUMBNAIL_MAX_EDGE,
-      quality: FIXED_THUMBNAIL_QUALITY,
+      recipeId,
       ...(fallbackOrientation === undefined ? {} : { fallbackOrientation }),
     });
     const derivedKey = createThumbnailKey({
@@ -93,6 +110,7 @@ const applyThumbnailPolicy = async ({
       bucket,
       sourceKey,
       etag: normalizedEtag || etag,
+      formatVersion: recipeId,
     });
 
     return {
@@ -109,6 +127,16 @@ const applyThumbnailPolicy = async ({
       webpBuffer: transformed.buffer,
     };
   } catch (error) {
+    if (error?.code === "thumbnail-source-too-small") {
+      return {
+        eligible: false,
+        reason: "thumbnail-source-too-small",
+        derivedKey: null,
+        dimensions: null,
+        contentType: null,
+        bytes: null,
+      };
+    }
     return {
       eligible: false,
       reason: "thumbnail-generation-failed",

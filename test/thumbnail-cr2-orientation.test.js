@@ -164,8 +164,7 @@ test("CR2 IFD0 orientation 8 rotates pixels counterclockwise with metadata strip
   const input = await makeAsymmetricPng();
   const transformed = await transformToWebp({
     input,
-    maxEdge: 512,
-    quality: 80,
+    recipeId: "v1",
     fallbackOrientation: 8,
   });
   const output = await sharp(transformed.buffer).raw().toBuffer({ resolveWithObject: true });
@@ -196,7 +195,7 @@ test("preview EXIF orientation is auto-applied once and ordinary auto-orientatio
     sourceOrientation: { status: "orientation", orientation: 8 },
     previewOrientation: previewMetadata.orientation,
   });
-  const transformed = await transformToWebp({ input, maxEdge: 512, quality: 80 });
+  const transformed = await transformToWebp({ input });
 
   assert.equal(selected.orientationSource, "preview-exif");
   assert.equal(selected.fallbackOrientation, undefined);

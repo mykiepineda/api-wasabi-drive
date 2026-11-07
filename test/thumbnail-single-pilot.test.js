@@ -112,6 +112,105 @@ test("default dry-run performs metadata and destination HEAD only, with a hashed
   });
 });
 
+test("v2 selection uses the matching deterministic key and preserves the undersized skip outcome", async () => {
+  const image = await sharp({
+    create: { width: 400, height: 400, channels: 3, background: "#2288cc" },
+  }).png().toBuffer();
+  const expectedKey = createThumbnailKey({
+    sourceRegion: source.sourceRegion,
+    sourceBucket: source.sourceBucket,
+    completeSourceKey: source.sourceKey,
+    normalizedETag: "source-etag",
+    formatVersion: "v2",
+  });
+  const { storage, calls } = makeStorage({
+    async headSource() {
+      return { etag: '"source-etag"', size: image.length };
+    },
+    async getSourceBuffer() {
+      return image;
+    },
+  });
+
+  const generated = await generateThumbnailForObject({
+    ...source,
+    storage,
+    dryRun: false,
+    recipeId: "v2",
+  });
+
+  assert.equal(generated.category, "generated");
+  assert.equal(generated.derivedKey, expectedKey);
+  assert.deepEqual(generated.dimensions, { width: 200, height: 190 });
+  assert.equal(calls.find(({ operation }) => operation === "head-derived").params.key, expectedKey);
+  assert.equal(calls.find(({ operation }) => operation === "put-derived").params.key, expectedKey);
+
+  const smallImage = await sharp({
+    create: { width: 199, height: 400, channels: 3, background: "#2288cc" },
+  }).png().toBuffer();
+  const smallStorage = makeStorage({
+    async headSource() {
+      return { etag: '"source-etag"', size: smallImage.length };
+    },
+    async getSourceBuffer() {
+      return smallImage;
+    },
+  });
+  const skipped = await generateThumbnailForObject({
+    ...source,
+    storage: smallStorage.storage,
+    dryRun: false,
+    recipeId: "v2",
+  });
+
+  assert.equal(skipped.category, "unsupported");
+  assert.equal(skipped.reason, "thumbnail-source-too-small");
+  assert.equal(smallStorage.calls.some(({ operation }) => operation === "put-derived"), false);
+});
+
+test("generator rejects unknown recipe IDs before storage access", async () => {
+  const { storage, calls } = makeStorage();
+  const result = await generateThumbnailForObject({
+    ...source,
+    storage,
+    recipeId: "v99",
+  });
+
+  assert.deepEqual(result, {
+    category: "unsupported",
+    count: 1,
+    reason: "unsupported-thumbnail-recipe",
+  });
+  assert.deepEqual(calls, []);
+});
+
+test("generator rejects off-size output from a v2 policy before writing", async () => {
+  const { storage, calls } = makeStorage();
+  const result = await generateThumbnailForObject({
+    ...source,
+    storage,
+    dryRun: false,
+    recipeId: "v2",
+    applyPolicy: async () => ({
+      eligible: true,
+      derivedKey: createThumbnailKey({
+        sourceRegion: source.sourceRegion,
+        sourceBucket: source.sourceBucket,
+        completeSourceKey: source.sourceKey,
+        normalizedETag: "source-etag",
+        formatVersion: "v2",
+      }),
+      webpBuffer: Buffer.from("synthetic webp"),
+      contentType: "image/webp",
+      dimensions: { width: 199, height: 190 },
+    }),
+  });
+
+  assert.equal(result.category, "failed");
+  assert.equal(result.reason, "invalid-thumbnail-result");
+  assert.equal(calls.some(({ operation }) => operation === "put-derived"), false);
+});
+
 test("known derived objects skip before source body reads; unsupported metadata also avoids reads", async () => {
   const present = makeStorage({
     async headDerived() {

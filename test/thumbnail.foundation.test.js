@@ -40,6 +40,17 @@ const makePngBuffer = async ({ width = 1200, height = 600, orientation, alpha = 
   return pipeline.png().toBuffer();
 };
 
+const pixelAt = (image, x, y) => {
+  const index = ((y * image.info.width) + x) * image.info.channels;
+  return [...image.data.subarray(index, index + 3)];
+};
+
+const assertColorNear = (actual, expected) => {
+  for (let channel = 0; channel < 3; channel += 1) {
+    assert.ok(Math.abs(actual[channel] - expected[channel]) < 45, `expected ${actual} near ${expected}`);
+  }
+};
+
 test("v1 thumbnail keys are deterministic and separated by identity inputs", () => {
   const one = createThumbnailKey({
     region: "us-east-1",
@@ -240,6 +251,13 @@ test("standard image formats retain the existing service path and recipe", async
       assert.ok(result.dimensions.width <= FIXED_THUMBNAIL_MAX_EDGE);
       assert.ok(result.dimensions.height <= FIXED_THUMBNAIL_MAX_EDGE);
       assert.equal(result.reason, "thumbnail-generated");
+      assert.equal(result.derivedKey, createThumbnailKey({
+        region: "us-east-1",
+        bucket: "source-bucket",
+        sourceKey: `photos/family.${extension}`,
+        etag: '"abc-123"',
+        formatVersion: "v1",
+      }));
       assert.equal((await sharp(result.webpBuffer).metadata()).orientation, undefined);
     }
   } finally {
@@ -253,7 +271,7 @@ test("standard image formats retain the existing service path and recipe", async
 
 test("transform enforces the A2 resize recipe and preserves alpha in transparent output", async () => {
   const input = await makePngBuffer({ width: 40, height: 20, orientation: 6, alpha: 0.5 });
-  const transformed = await transformToWebp({ input, maxEdge: 512, quality: 80 });
+  const transformed = await transformToWebp({ input });
   const outputMetadata = await sharp(transformed.buffer).metadata();
   const outputPixel = await sharp(transformed.buffer).raw().toBuffer({ resolveWithObject: true });
 
@@ -269,6 +287,184 @@ test("transform enforces the A2 resize recipe and preserves alpha in transparent
   const alphaIndex = ((centerY * outputPixel.info.width) + centerX) * 4 + 3;
   assert.ok(outputPixel.data[alphaIndex] > 0 && outputPixel.data[alphaIndex] < 255, "alpha channel should be preserved for semitransparent pixels");
   assert.equal(normalizeExtension(".JPG"), "jpg");
+});
+
+test("v2 uses a centred 200x190 cover crop for landscape and portrait images", async () => {
+  const makeBands = async ({ width, height, vertical }) => {
+    const pixels = Buffer.alloc(width * height * 3);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const position = vertical ? y : x;
+        const span = vertical ? height : width;
+        const color = position < span / 4
+          ? [255, 0, 0]
+          : position >= (span * 3) / 4
+            ? [0, 0, 255]
+            : [0, 200, 0];
+        const index = ((y * width) + x) * 3;
+        pixels[index] = color[0];
+        pixels[index + 1] = color[1];
+        pixels[index + 2] = color[2];
+      }
+    }
+    return sharp(pixels, { raw: { width, height, channels: 3 } }).png().toBuffer();
+  };
+  const cases = [
+    { width: 400, height: 190, vertical: false },
+    { width: 200, height: 380, vertical: true },
+  ];
+
+  for (const dimensions of cases) {
+    const input = await makeBands(dimensions);
+    const originalInput = Buffer.from(input);
+    const transformed = await transformToWebp({ input, recipeId: "v2" });
+    const output = await sharp(transformed.buffer).raw().toBuffer({ resolveWithObject: true });
+
+    assert.deepEqual({ width: transformed.width, height: transformed.height }, { width: 200, height: 190 });
+    assert.equal(input.equals(originalInput), true);
+    if (dimensions.vertical) {
+      assertColorNear(pixelAt(output, 100, 5), [0, 200, 0]);
+      assertColorNear(pixelAt(output, 100, 185), [0, 200, 0]);
+    } else {
+      assertColorNear(pixelAt(output, 5, 95), [0, 200, 0]);
+      assertColorNear(pixelAt(output, 195, 95), [0, 200, 0]);
+    }
+    assert.equal((await sharp(transformed.buffer).metadata()).format, "webp");
+    if (!dimensions.vertical) {
+      const expected = await sharp(input)
+        .rotate()
+        .resize(200, 190, { fit: "cover", position: "centre", withoutEnlargement: true })
+        .webp({ quality: 80 })
+        .toBuffer();
+      assert.deepEqual(transformed.buffer, expected);
+    }
+  }
+});
+
+test("v2 auto-orients before cropping, strips orientation metadata, and retains alpha", async () => {
+  const input = await makePngBuffer({ width: 400, height: 600, orientation: 6, alpha: 0.5 });
+  const transformed = await transformToWebp({ input, recipeId: "v2" });
+  const output = await sharp(transformed.buffer).raw().toBuffer({ resolveWithObject: true });
+  const metadata = await sharp(transformed.buffer).metadata();
+  const alphaIndex = ((95 * output.info.width) + 100) * output.info.channels + 3;
+
+  assert.deepEqual({ width: transformed.width, height: transformed.height }, { width: 200, height: 190 });
+  assert.equal(metadata.orientation, undefined);
+  assert.equal(output.info.channels, 4);
+  assert.ok(output.data[alphaIndex] > 0 && output.data[alphaIndex] < 255);
+});
+
+test("v2 rejects sources and embedded previews too small for an exact crop without enlargement", async () => {
+  const tooSmallInputs = [
+    { width: 199, height: 400 },
+    { width: 400, height: 189 },
+  ];
+  for (const dimensions of tooSmallInputs) {
+    const sourceBytes = await makePngBuffer(dimensions);
+    const result = await applyThumbnailPolicy({
+      region: "us-east-1",
+      bucket: "source-bucket",
+      sourceKey: "photos/small.png",
+      etag: '"small"',
+      sourceBytes,
+      extension: "png",
+      size: sourceBytes.length,
+      recipeId: "v2",
+    });
+    assert.equal(result.eligible, false);
+    assert.equal(result.reason, "thumbnail-source-too-small");
+    assert.equal(result.derivedKey, null);
+  }
+
+  const cr2Module = require("../src/thumbnail/cr2");
+  const originalExtractor = cr2Module.extractCR2EmbeddedPreview;
+  const previewBuffer = await makePngBuffer({ width: 199, height: 400 });
+  cr2Module.extractCR2EmbeddedPreview = async () => ({ eligible: true, buffer: previewBuffer });
+  try {
+    const sourceBytes = Buffer.from("synthetic CR2 bytes");
+    const result = await applyThumbnailPolicy({
+      region: "us-east-1",
+      bucket: "source-bucket",
+      sourceKey: "raw/small.CR2",
+      etag: '"small-cr2"',
+      sourceBytes,
+      extension: "cr2",
+      size: sourceBytes.length,
+      recipeId: "v2",
+    });
+    assert.equal(result.eligible, false);
+    assert.equal(result.reason, "thumbnail-source-too-small");
+  } finally {
+    cr2Module.extractCR2EmbeddedPreview = originalExtractor;
+  }
+});
+
+test("v2 applies the existing CR2 preview and fallback-orientation path", async () => {
+  const sourceBytes = Buffer.from("synthetic CR2 bytes");
+  const originalSource = Buffer.from(sourceBytes);
+  const previewBuffer = await makePngBuffer({ width: 500, height: 400 });
+  const cr2Module = require("../src/thumbnail/cr2");
+  const originalExtractor = cr2Module.extractCR2EmbeddedPreview;
+  cr2Module.extractCR2EmbeddedPreview = async () => ({
+    eligible: true,
+    buffer: previewBuffer,
+    fallbackOrientation: 6,
+  });
+
+  try {
+    const result = await applyThumbnailPolicy({
+      region: "us-east-1",
+      bucket: "source-bucket",
+      sourceKey: "raw/v2.CR2",
+      etag: '"v2-cr2"',
+      sourceBytes,
+      extension: "cr2",
+      size: sourceBytes.length,
+      recipeId: "v2",
+    });
+
+    assert.equal(result.eligible, true);
+    assert.equal(result.derivedKey, createThumbnailKey({
+      region: "us-east-1",
+      bucket: "source-bucket",
+      sourceKey: "raw/v2.CR2",
+      etag: '"v2-cr2"',
+      formatVersion: "v2",
+    }));
+    assert.deepEqual(result.dimensions, { width: 200, height: 190 });
+    assert.equal(result.contentType, "image/webp");
+    assert.equal(sourceBytes.equals(originalSource), true);
+  } finally {
+    cr2Module.extractCR2EmbeddedPreview = originalExtractor;
+  }
+});
+
+test("thumbnail library rejects unknown recipes and custom transform settings", async () => {
+  const sourceBytes = await makePngBuffer({ width: 400, height: 400 });
+  const base = {
+    region: "us-east-1",
+    bucket: "source-bucket",
+    sourceKey: "photos/recipe.png",
+    etag: '"recipe"',
+    sourceBytes,
+    extension: "png",
+    size: sourceBytes.length,
+  };
+
+  for (const recipeId of ["v3", "../v2", "V2", { id: "v2" }]) {
+    const result = await applyThumbnailPolicy({ ...base, recipeId });
+    assert.equal(result.eligible, false);
+    assert.equal(result.reason, "unsupported-thumbnail-recipe");
+  }
+  for (const custom of [{ maxEdge: 200 }, { quality: 75 }]) {
+    const result = await applyThumbnailPolicy({ ...base, ...custom });
+    assert.equal(result.eligible, false);
+    assert.equal(result.reason, "unsupported-custom-recipe");
+  }
+  await assert.rejects(
+    transformToWebp({ input: sourceBytes, recipeId: "v2", width: 300 }),
+    /Custom thumbnail transform options/,
+  );
 });
 
 test("corrupt supported image bytes fail safely without mutating input", async () => {

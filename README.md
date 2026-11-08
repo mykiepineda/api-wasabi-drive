@@ -293,6 +293,12 @@ Run a metadata-only dry run by default:
 npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region>
 ```
 
+Recipe `v2` is the fixed 200 x 190-pixel centre crop, encoded as WebP at quality 80. It can be selected explicitly for a metadata-only dry run; `v1` remains the default. This example does **not** authorize live execution:
+
+```powershell
+npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region> --recipe v2
+```
+
 An explicitly approved live one-object operation requires both confirmation flags:
 
 ```powershell

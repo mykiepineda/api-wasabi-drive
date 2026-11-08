@@ -68,10 +68,18 @@ test("CLI requires one explicit source and both live-write confirmations", () =>
   assert.throws(() => parseArguments(args(["--execute"])), /invalid-arguments/);
   assert.throws(() => parseArguments(args(["--confirm-test-write"])), /invalid-arguments/);
   assert.throws(() => parseArguments(args(["--stage", "prd"])), /invalid-arguments/);
+  assert.throws(() => parseArguments(args(["--recipe"])), /invalid-arguments/);
+  assert.throws(() => parseArguments(args(["--recipe", "v3"])), /invalid-arguments/);
+  assert.throws(() => parseArguments(args(["--recipe", "v1", "--recipe", "v2"])), /invalid-arguments/);
+  assert.throws(() => parseArguments(args(["--execute", "--recipe", "v2"])), /invalid-arguments/);
+  assert.equal(parseArguments(args()).recipeId, "v1");
+  assert.equal(parseArguments(args(["--recipe", "v1"])).recipeId, "v1");
+  assert.equal(parseArguments(args(["--recipe", "v2"])).recipeId, "v2");
   assert.deepEqual(parseArguments(args(["--execute", "--confirm-test-write"])), {
     sourceBucket: source.sourceBucket,
     sourceKey: source.sourceKey,
     sourceRegion: source.sourceRegion,
+    recipeId: "v1",
     execute: true,
   });
 });
@@ -446,6 +454,7 @@ test("CLI pins the source allowlist, defaults to dry-run, and prints no private 
   });
   assert.equal(status, 0);
   assert.equal(generatedOptions.dryRun, true);
+  assert.equal(generatedOptions.recipeId, "v1");
   assert.equal(generatedOptions.destinationBucket, source.destinationBucket);
   assert.deepEqual(JSON.parse(output), {
     category: "generated",
@@ -455,6 +464,24 @@ test("CLI pins the source allowlist, defaults to dry-run, and prints no private 
     contentType: "image/webp",
   });
   assert.equal(output.includes("private"), false);
+});
+
+test("CLI forwards explicit v2 selection only with both live-write confirmations", async () => {
+  const env = testEnvironment();
+  let generatedOptions;
+  const status = await main(args(["--recipe", "v2", "--execute", "--confirm-test-write"]), {
+    env,
+    createStorage: () => ({}),
+    generate: async (options) => {
+      generatedOptions = options;
+      return { category: "generated" };
+    },
+    write: () => {},
+  });
+
+  assert.equal(status, 0);
+  assert.equal(generatedOptions.recipeId, "v2");
+  assert.equal(generatedOptions.dryRun, false);
 });
 
 test("CLI production or unapproved source selection fails closed before storage creation", async () => {
@@ -469,6 +496,22 @@ test("CLI production or unapproved source selection fails closed before storage 
     write: (message) => { output = message; },
   });
   assert.equal(status, 1);
+  assert.equal(storageCreated, false);
+  assert.deepEqual(JSON.parse(output), { category: "failed", count: 1 });
+
+  const invalidBucket = await main([
+    "--source-bucket", source.destinationBucket,
+    "--source-key", source.sourceKey,
+    "--source-region", source.sourceRegion,
+  ], {
+    env: testEnvironment(),
+    createStorage: () => {
+      storageCreated = true;
+      return {};
+    },
+    write: (message) => { output = message; },
+  });
+  assert.equal(invalidBucket, 1);
   assert.equal(storageCreated, false);
   assert.deepEqual(JSON.parse(output), { category: "failed", count: 1 });
 

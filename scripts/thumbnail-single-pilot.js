@@ -18,7 +18,8 @@ const SAFE_CATEGORIES = new Set([
 const parseArguments = (args) => {
   const values = new Map();
   const flags = new Set();
-  const valueFlags = new Set(["--source-bucket", "--source-key", "--source-region"]);
+  const requiredValueFlags = new Set(["--source-bucket", "--source-key", "--source-region"]);
+  const valueFlags = new Set([...requiredValueFlags, "--recipe"]);
   const booleanFlags = new Set(["--execute", "--confirm-test-write"]);
 
   for (let index = 0; index < args.length; index += 1) {
@@ -39,10 +40,13 @@ const parseArguments = (args) => {
     }
   }
 
-  for (const flag of valueFlags) {
+  for (const flag of requiredValueFlags) {
     if (!values.has(flag)) {
       throw new Error("invalid-arguments");
     }
+  }
+  if (values.has("--recipe") && !["v1", "v2"].includes(values.get("--recipe"))) {
+    throw new Error("invalid-arguments");
   }
   if (flags.has("--confirm-test-write") !== flags.has("--execute")) {
     throw new Error("invalid-arguments");
@@ -52,6 +56,7 @@ const parseArguments = (args) => {
     sourceBucket: values.get("--source-bucket"),
     sourceKey: values.get("--source-key"),
     sourceRegion: values.get("--source-region"),
+    recipeId: values.get("--recipe") ?? "v1",
     execute: flags.has("--execute"),
   };
 };
@@ -144,6 +149,7 @@ const main = async (
       destinationRegion: config.destinationRegion,
       storage,
       dryRun: !options.execute,
+      recipeId: options.recipeId,
     });
   } catch {
     result = { category: "failed" };

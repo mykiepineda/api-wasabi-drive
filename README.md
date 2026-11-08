@@ -293,10 +293,24 @@ Run a metadata-only dry run by default:
 npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region>
 ```
 
-An explicitly approved live one-object operation requires both confirmation flags:
+Recipe `v2` is the fixed 200 x 190-pixel centre crop, encoded as WebP at quality 80. It can be selected explicitly for a metadata-only dry run; `v1` remains the default. This example does **not** authorize live execution:
 
 ```powershell
-npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region> --execute --confirm-test-write
+npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region> --recipe v2
+```
+
+**Live-write approval warning:** The following commands are syntax examples only. This documentation does not authorize a live TEST write. Run either command only after separate owner approval and confirmation of the TEST source, destination, credentials, and permissions. Both confirmation flags are required.
+
+An explicitly approved live one-object operation using the legacy `v1` recipe requires both confirmation flags:
+
+```powershell
+npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region> --recipe v1 --execute --confirm-test-write
+```
+
+To select the fixed C1 recipe for an explicitly approved live one-object operation, specify `--recipe v2`:
+
+```powershell
+npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <full-object-key> --source-region <wasabi-region> --recipe v2 --execute --confirm-test-write
 ```
 
 The pilot checks the deterministic destination key before any source-body download, rejects known oversized objects, and enforces a 25 MiB source stream limit. Source GetObject uses `IfMatch` and checks the returned ETag and size; derived PutObject uses `IfNoneMatch: "*"`. It never falls back to unconditional reads or writes. The owner validated conditional source reads in Sydney and conditional derived creation in Singapore for the B1 TEST pilot. Wasabi's fix rollout remains region-specific as noted above; verify the exact TEST destination before any additional live use.

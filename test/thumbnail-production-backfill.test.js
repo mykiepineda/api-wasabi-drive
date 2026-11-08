@@ -20,10 +20,18 @@ const {
   validateStatePaths,
   appendAuditRecord,
   acquireWriterLock,
+  parseAuditRecords,
+  processingFingerprint,
+  readCheckpoint,
+  recipeStatePaths,
   writeCheckpointAtomically,
 } = require("../src/thumbnail/production-backfill");
 const { main, safeSummary } = require("../scripts/thumbnail-backfill-prd");
-const { createThumbnailPrdBackfillStorage } = require("../src/storage/thumbnail-prd-backfill-wasabi");
+const {
+  createThumbnailPrdBackfillStorage,
+  validDerivedKey,
+} = require("../src/storage/thumbnail-prd-backfill-wasabi");
+const { generateThumbnailForObject } = require("../src/thumbnail/generate");
 
 const writeCheckpointForTests = (file, value) =>
   writeCheckpointAtomically(file, value, () => {});
@@ -119,6 +127,13 @@ const generatedKey = createThumbnailKey({
   completeSourceKey: `${scope.prefix}image.jpg`,
   normalizedETag: "source-etag",
 });
+const generatedV2Key = createThumbnailKey({
+  sourceRegion: scope.sourceRegion,
+  sourceBucket: scope.sourceBucket,
+  completeSourceKey: `${scope.prefix}image.jpg`,
+  normalizedETag: "source-etag",
+  formatVersion: "v2",
+});
 const scopeId = crypto.createHash("sha256").update(JSON.stringify([
   scope.sourceBucket,
   scope.sourceRegion,
@@ -153,6 +168,13 @@ const storageFor = (pages) => {
   };
 };
 const generated = (key = generatedKey) => ({ category: "generated", count: 1, derivedKey: key });
+const generatedFor = ({ sourceKey, recipeId = "v1", etag = "source-etag" }) => generated(createThumbnailKey({
+  sourceRegion: scope.sourceRegion,
+  sourceBucket: scope.sourceBucket,
+  completeSourceKey: sourceKey,
+  normalizedETag: etag,
+  formatVersion: recipeId,
+}));
 
 test.after(() => fs.rmSync(privateTestRoot, { recursive: true, force: true }));
 
@@ -198,9 +220,15 @@ test("arguments reject unknown, duplicate, malformed and unpaired execution flag
     pageSize: undefined,
     checkpoint: undefined,
     audit: undefined,
+    recipeId: "v1",
     execute: false,
   });
+  assert.equal(parseArguments(cliArgs(["--recipe", "v1"])).recipeId, "v1");
+  assert.equal(parseArguments(cliArgs(["--recipe", "v2"])).recipeId, "v2");
   for (const args of [
+    cliArgs(["--recipe", "v3"]),
+    cliArgs(["--recipe", "200x190"]),
+    cliArgs(["--recipe", "v2", "--recipe", "v1"]),
     cliArgs(["--execute"]),
     cliArgs(["--confirm-prd-backfill"]),
     cliArgs(["--execute", "--confirm-prd-backfill", "--execute"]),
@@ -295,6 +323,7 @@ test("default CLI is dry-run and prints only a validated aggregate summary", asy
   assert.equal(scanParams.dryRun, true);
   assert.equal(scanParams.checkpointPath, undefined);
   assert.equal(scanParams.auditPath, undefined);
+  assert.equal(scanParams.recipeId, "v1");
   for (const privateValue of [
     "source-name-not-for-output",
     "derived-hash-not-for-output",
@@ -322,6 +351,75 @@ test("default CLI is dry-run and prints only a validated aggregate summary", asy
     oversize: 0,
     failed: 0,
   });
+});
+
+test("explicit v2 selection reaches the existing storage and generator layers in dry-run", async () => {
+  const output = [];
+  let storageOptions;
+  let scanParams;
+  const exitCode = await main(cliArgs(["--recipe", "v2"]), {
+    env: configEnv(),
+    write: (line) => output.push(line),
+    createStorage: (options) => {
+      storageOptions = options;
+      return {};
+    },
+    runScan: async (params) => {
+      scanParams = params;
+      return {
+        category: "dry-run",
+        examined: 0,
+        generated: 0,
+        alreadyPresent: 0,
+        unsupported: 0,
+        oversize: 0,
+        failed: 0,
+      };
+    },
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(storageOptions.recipeId, "v2");
+  assert.equal(scanParams.recipeId, "v2");
+  assert.equal(scanParams.dryRun, true);
+  assert.equal(JSON.parse(output[0]).category, "dry-run");
+});
+
+test("explicit v1 selection retains the legacy CLI recipe and state paths", async () => {
+  const output = [];
+  let storageRecipe;
+  let scanRecipe;
+  const exitCode = await main(cliArgs(["--recipe", "v1"]), {
+    env: configEnv(),
+    write: (line) => output.push(line),
+    createStorage: ({ recipeId }) => {
+      storageRecipe = recipeId;
+      return {};
+    },
+    runScan: async ({ recipeId }) => {
+      scanRecipe = recipeId;
+      return {
+        category: "dry-run",
+        examined: 0,
+        generated: 0,
+        alreadyPresent: 0,
+        unsupported: 0,
+        oversize: 0,
+        failed: 0,
+      };
+    },
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(storageRecipe, "v1");
+  assert.equal(scanRecipe, "v1");
+  assert.deepEqual(recipeStatePaths({
+    recipeId: "v1",
+    checkpointPath: "legacy-checkpoint.json",
+    auditPath: "legacy-audit.jsonl",
+  }), {
+    checkpointPath: "legacy-checkpoint.json",
+    auditPath: "legacy-audit.jsonl",
+  });
+  assert.equal(JSON.parse(output[0]).category, "dry-run");
 });
 
 test("Windows production execution fails before storage creation because rename durability is unverified", async () => {
@@ -465,6 +563,122 @@ test("region clients and operations are explicit and bound to the configured buc
     region: scope.destinationRegion,
   }));
   assert.equal(commands.length, callsBeforeInvalid);
+});
+
+test("v2 storage approval is fixed to the selected recipe, source identity, and current ETag", async () => {
+  const commands = [];
+  let sourceEtag = '"source-etag"';
+  const body = Buffer.from("source");
+  const storage = createThumbnailPrdBackfillStorage({
+    scope,
+    recipeId: "v2",
+    accessKeyId: config.accessKeyId,
+    secretAccessKey: config.secretAccessKey,
+    createClient: () => ({
+      async send(command) {
+        commands.push(command);
+        if (command instanceof HeadObjectCommand && command.input.Bucket === scope.sourceBucket) {
+          return { ETag: sourceEtag, ContentLength: body.length };
+        }
+        if (command instanceof HeadObjectCommand) {
+          const error = new Error("missing");
+          error.name = "NotFound";
+          error.$metadata = { httpStatusCode: 404 };
+          throw error;
+        }
+        if (command instanceof GetObjectCommand) {
+          return {
+            ETag: sourceEtag,
+            ContentLength: body.length,
+            Body: (async function* stream() { yield body; }()),
+          };
+        }
+        if (command instanceof PutObjectCommand) return { ETag: '"derived-etag"' };
+        throw new Error("unexpected command");
+      },
+    }),
+  });
+  const sourceKey = `${scope.prefix}image.jpg`;
+  const currentV2Key = (etag) => createThumbnailKey({
+    sourceRegion: scope.sourceRegion,
+    sourceBucket: scope.sourceBucket,
+    completeSourceKey: sourceKey,
+    normalizedETag: etag,
+    formatVersion: "v2",
+  });
+
+  assert.equal(validDerivedKey(generatedKey), true);
+  assert.equal(validDerivedKey(generatedV2Key), false);
+  assert.equal(validDerivedKey(generatedV2Key, "v2"), true);
+  assert.equal(validDerivedKey(`v2/aa/${"a".repeat(64)}.webp`, "v2"), true);
+  assert.equal(validDerivedKey(generatedV2Key, "v3"), false);
+  assert.equal(validDerivedKey(generatedV2Key, "toString"), false);
+
+  await storage.headSource({
+    bucket: scope.sourceBucket,
+    key: sourceKey,
+    region: scope.sourceRegion,
+  });
+  const approvedV2Key = currentV2Key("source-etag");
+  assert.equal(approvedV2Key, generatedV2Key);
+  await storage.headDerived({
+    bucket: scope.destinationBucket,
+    key: approvedV2Key,
+    region: scope.destinationRegion,
+  }).then((exists) => assert.equal(exists, false));
+  await storage.putDerived({
+    bucket: scope.destinationBucket,
+    key: approvedV2Key,
+    region: scope.destinationRegion,
+    body: Buffer.from("webp"),
+  });
+  assert.equal(
+    commands.find((command) => command instanceof PutObjectCommand).input.IfNoneMatch,
+    "*",
+  );
+
+  const callsBeforeInvalid = commands.length;
+  for (const key of [
+    generatedKey,
+    createThumbnailKey({
+      sourceRegion: scope.sourceRegion,
+      sourceBucket: scope.sourceBucket,
+      completeSourceKey: `${scope.prefix}other.jpg`,
+      normalizedETag: "source-etag",
+      formatVersion: "v2",
+    }),
+    `v2/aa/${"a".repeat(64)}.webp`,
+  ]) {
+    await assert.rejects(storage.headDerived({
+      bucket: scope.destinationBucket,
+      key,
+      region: scope.destinationRegion,
+    }));
+    await assert.rejects(storage.putDerived({
+      bucket: scope.destinationBucket,
+      key,
+      region: scope.destinationRegion,
+      body: Buffer.from("webp"),
+    }));
+  }
+  assert.equal(commands.length, callsBeforeInvalid);
+
+  sourceEtag = '"changed-etag"';
+  await storage.headSource({
+    bucket: scope.sourceBucket,
+    key: sourceKey,
+    region: scope.sourceRegion,
+  });
+  await assert.rejects(storage.headDerived({
+    bucket: scope.destinationBucket,
+    key: approvedV2Key,
+    region: scope.destinationRegion,
+  }));
+  await storage.headDerived({
+    bucket: scope.destinationBucket,
+    key: currentV2Key("changed-etag"),
+    region: scope.destinationRegion,
+  });
 });
 
 test("provider 403 and unsupported conditional headers fail; 412 is only already-present after positive HEAD", async () => {
@@ -654,6 +868,273 @@ test("source HEAD must match the listed ETag and size before checking derived me
   assert.equal(derivedHeads, 0);
 });
 
+test("v2 generation uses the fixed recipe and deterministic identity from the current source ETag", async () => {
+  const sourceKey = `${scope.prefix}exact/source image.jpg`;
+  const sourceEtag = '"current-etag"';
+  const sourceBytes = Buffer.from("synthetic source");
+  let recipeReceived;
+  let putKey;
+  const result = await generateThumbnailForObject({
+    sourceBucket: scope.sourceBucket,
+    sourceKey,
+    sourceRegion: scope.sourceRegion,
+    destinationBucket: scope.destinationBucket,
+    destinationRegion: scope.destinationRegion,
+    recipeId: "v2",
+    dryRun: false,
+    storage: {
+      async headSource() { return { etag: sourceEtag, size: sourceBytes.length }; },
+      async headDerived() { return false; },
+      async getSourceBuffer() { return sourceBytes; },
+      async putDerived({ key }) { putKey = key; return { ETag: '"derived-etag"' }; },
+    },
+    applyPolicy: async (params) => {
+      recipeReceived = params.recipeId;
+      return {
+        eligible: true,
+        derivedKey: createThumbnailKey({
+          sourceRegion: params.region,
+          sourceBucket: params.bucket,
+          completeSourceKey: params.sourceKey,
+          normalizedETag: params.etag,
+          formatVersion: params.recipeId,
+        }),
+        webpBuffer: Buffer.from("synthetic webp"),
+        contentType: "image/webp",
+        dimensions: { width: 200, height: 190 },
+      };
+    },
+  });
+  const expectedKey = createThumbnailKey({
+    sourceRegion: scope.sourceRegion,
+    sourceBucket: scope.sourceBucket,
+    completeSourceKey: sourceKey,
+    normalizedETag: "current-etag",
+    formatVersion: "v2",
+  });
+  assert.equal(result.category, "generated");
+  assert.equal(recipeReceived, "v2");
+  assert.equal(result.derivedKey, expectedKey);
+  assert.match(result.derivedKey, /^v2\/[a-f0-9]{2}\/[a-f0-9]{64}\.webp$/);
+  assert.equal(putKey, expectedKey);
+});
+
+test("v2 skips too-small originals and CR2 previews without attempting a derived write", async () => {
+  const sharp = require("sharp");
+  const cr2 = require("../src/thumbnail/cr2");
+  const smallImage = await sharp({
+    create: {
+      width: 199,
+      height: 190,
+      channels: 3,
+      background: { r: 10, g: 20, b: 30 },
+    },
+  }).jpeg().toBuffer();
+  let putCount = 0;
+  const makeStorage = (key) => ({
+    async headSource() { return { etag: '"source-etag"', size: smallImage.length }; },
+    async headDerived() { return false; },
+    async getSourceBuffer() { return smallImage; },
+    async putDerived() { putCount += 1; },
+  });
+  const originalResult = await generateThumbnailForObject({
+    sourceBucket: scope.sourceBucket,
+    sourceKey: `${scope.prefix}small.jpg`,
+    sourceRegion: scope.sourceRegion,
+    destinationBucket: scope.destinationBucket,
+    destinationRegion: scope.destinationRegion,
+    recipeId: "v2",
+    dryRun: false,
+    storage: makeStorage("small.jpg"),
+  });
+  const originalExtract = cr2.extractCR2EmbeddedPreview;
+  try {
+    cr2.extractCR2EmbeddedPreview = async () => ({
+      eligible: true,
+      buffer: smallImage,
+      fallbackOrientation: 1,
+    });
+    const previewResult = await generateThumbnailForObject({
+      sourceBucket: scope.sourceBucket,
+      sourceKey: `${scope.prefix}small.cr2`,
+      sourceRegion: scope.sourceRegion,
+      destinationBucket: scope.destinationBucket,
+      destinationRegion: scope.destinationRegion,
+      recipeId: "v2",
+      dryRun: false,
+      storage: makeStorage("small.cr2"),
+    });
+    assert.equal(previewResult.category, "unsupported");
+    assert.equal(previewResult.reason, "thumbnail-source-too-small");
+  } finally {
+    cr2.extractCR2EmbeddedPreview = originalExtract;
+  }
+  assert.equal(originalResult.category, "unsupported");
+  assert.equal(originalResult.reason, "thumbnail-source-too-small");
+  assert.equal(putCount, 0);
+});
+
+test("v2 checkpoint and audit resume independently from the unchanged legacy v1 state", async () => {
+  const paths = statePaths();
+  const versionedPaths = recipeStatePaths({ recipeId: "v2", ...paths });
+  assert.deepEqual(recipeStatePaths({ recipeId: "v1", ...paths }), paths);
+  assert.notEqual(versionedPaths.checkpointPath, paths.checkpointPath);
+  assert.notEqual(versionedPaths.auditPath, paths.auditPath);
+  assert.match(versionedPaths.checkpointPath, /\.v2\.json$/);
+  assert.match(versionedPaths.auditPath, /\.v2\.jsonl$/);
+
+  const v1First = await runProductionBackfill({
+    scope,
+    storage: storageFor([{
+      Contents: [makeItem(`${scope.prefix}a.jpg`)],
+      IsTruncated: false,
+    }]).storage,
+    maxObjects: 1,
+    dryRun: false,
+    ...paths,
+    generate: async () => ({ category: "already-present", count: 1 }),
+  });
+  assert.equal(v1First.alreadyPresent, 1);
+  const originalV1Checkpoint = fs.readFileSync(paths.checkpointPath);
+
+  const v2Listing = storageFor([{
+    Contents: [makeItem(`${scope.prefix}b.jpg`)],
+    IsTruncated: false,
+  }]);
+  const v2Key = createThumbnailKey({
+    sourceRegion: scope.sourceRegion,
+    sourceBucket: scope.sourceBucket,
+    completeSourceKey: `${scope.prefix}b.jpg`,
+    normalizedETag: "source-etag",
+    formatVersion: "v2",
+  });
+  const v2Result = await runProductionBackfill({
+    scope,
+    storage: v2Listing.storage,
+    maxObjects: 1,
+    dryRun: false,
+    recipeId: "v2",
+    ...paths,
+    generate: async ({ recipeId }) => {
+      assert.equal(recipeId, "v2");
+      return { category: "generated", count: 1, derivedKey: v2Key };
+    },
+  });
+  assert.equal(v2Result.generated, 1);
+  assert.equal(v2Listing.calls[0].startAfter, undefined);
+  assert.deepEqual(fs.readFileSync(paths.checkpointPath), originalV1Checkpoint);
+
+  const v2Checkpoint = JSON.parse(fs.readFileSync(versionedPaths.checkpointPath, "utf8"));
+  assert.deepEqual(v2Checkpoint, {
+    version: 2,
+    recipeId: "v2",
+    scope,
+    lastCompletedKey: `${scope.prefix}b.jpg`,
+  });
+  const auditRecords = fs.readFileSync(versionedPaths.auditPath, "utf8")
+    .trim().split("\n").map(JSON.parse);
+  assert.equal(auditRecords.length, 2);
+  assert.ok(auditRecords.every((record) =>
+    record.version === 3
+    && record.recipeId === "v2"
+    && record.scopeId === processingFingerprint(scope, "v2")));
+  assert.notEqual(processingFingerprint(scope, "v2"), processingFingerprint(scope, "v1"));
+  assert.throws(() => readCheckpoint(paths.checkpointPath, scope, () => {}, "v2"));
+  assert.throws(() => readCheckpoint(versionedPaths.checkpointPath, scope, () => {}, "v1"));
+  assert.throws(() => parseAuditRecords(
+    versionedPaths.auditPath,
+    processingFingerprint(scope, "v2"),
+    () => {},
+    "v1",
+  ));
+
+  const v1ResumeListing = storageFor([{
+    Contents: [makeItem(`${scope.prefix}c.jpg`)],
+    IsTruncated: false,
+  }]);
+  const v1Resumed = await runProductionBackfill({
+    scope,
+    storage: v1ResumeListing.storage,
+    maxObjects: 1,
+    dryRun: false,
+    ...paths,
+    generate: async () => ({ category: "already-present", count: 1 }),
+  });
+  assert.equal(v1Resumed.alreadyPresent, 1);
+  assert.equal(v1ResumeListing.calls[0].startAfter, `${scope.prefix}a.jpg`);
+});
+
+test("mismatched recipe checkpoints and audits fail before listing source objects", async () => {
+  const paths = statePaths();
+  const v2Paths = recipeStatePaths({ recipeId: "v2", ...paths });
+  const v1Checkpoint = { version: 1, scope, lastCompletedKey: null };
+  const v2Checkpoint = { version: 2, recipeId: "v2", scope, lastCompletedKey: null };
+
+  writeCheckpointForTests(v2Paths.checkpointPath, v1Checkpoint);
+  let listed = false;
+  const v1CheckpointAsV2 = await runProductionBackfill({
+    scope,
+    storage: { async listSourcePage() { listed = true; return { Contents: [], IsTruncated: false }; } },
+    maxObjects: 1,
+    dryRun: false,
+    recipeId: "v2",
+    ...paths,
+  });
+  assert.equal(v1CheckpointAsV2.category, "failed");
+  assert.equal(listed, false);
+
+  fs.unlinkSync(v2Paths.checkpointPath);
+  writeCheckpointForTests(paths.checkpointPath, v2Checkpoint);
+  const v2CheckpointAsV1 = await runProductionBackfill({
+    scope,
+    storage: { async listSourcePage() { listed = true; return { Contents: [], IsTruncated: false }; } },
+    maxObjects: 1,
+    dryRun: false,
+    ...paths,
+  });
+  assert.equal(v2CheckpointAsV1.category, "failed");
+  assert.equal(listed, false);
+
+  fs.unlinkSync(paths.checkpointPath);
+  fs.writeFileSync(v2Paths.auditPath, `${JSON.stringify({
+    version: 1,
+    scopeId: processingFingerprint(scope),
+    timestamp: new Date().toISOString(),
+    status: "generated",
+    derivedKey: generatedKey,
+  })}\n`, { mode: 0o600 });
+  const v1AuditAsV2 = await runProductionBackfill({
+    scope,
+    storage: { async listSourcePage() { listed = true; return { Contents: [], IsTruncated: false }; } },
+    maxObjects: 1,
+    dryRun: false,
+    recipeId: "v2",
+    ...paths,
+  });
+  assert.equal(v1AuditAsV2.category, "failed");
+  assert.equal(listed, false);
+
+  fs.unlinkSync(v2Paths.auditPath);
+  fs.writeFileSync(paths.auditPath, `${JSON.stringify({
+    version: 3,
+    recipeId: "v2",
+    scopeId: processingFingerprint(scope, "v2"),
+    timestamp: new Date().toISOString(),
+    type: "write-intent",
+    eventId: crypto.randomUUID().replaceAll("-", ""),
+    derivedKey: generatedV2Key,
+  })}\n`, { mode: 0o600 });
+  const v2AuditAsV1 = await runProductionBackfill({
+    scope,
+    storage: { async listSourcePage() { listed = true; return { Contents: [], IsTruncated: false }; } },
+    maxObjects: 1,
+    dryRun: false,
+    ...paths,
+  });
+  assert.equal(v2AuditAsV1.category, "failed");
+  assert.equal(listed, false);
+});
+
 test("live scan initializes a scoped checkpoint, writes audit before checkpoint, then resumes via StartAfter", async () => {
   const paths = statePaths();
   const writes = [];
@@ -661,6 +1142,12 @@ test("live scan initializes a scoped checkpoint, writes audit before checkpoint,
     Contents: [makeItem(`${scope.prefix}a.jpg`)],
     IsTruncated: true,
   }]);
+  const firstDerivedKey = createThumbnailKey({
+    sourceRegion: scope.sourceRegion,
+    sourceBucket: scope.sourceBucket,
+    completeSourceKey: `${scope.prefix}a.jpg`,
+    normalizedETag: "source-etag",
+  });
   const firstSummary = await runProductionBackfill({
     scope,
     storage: first.storage,
@@ -668,7 +1155,7 @@ test("live scan initializes a scoped checkpoint, writes audit before checkpoint,
     pageSize: 2,
     dryRun: false,
     ...paths,
-    generate: async () => generated(),
+    generate: async (params) => generatedFor(params),
     appendAudit: (file, record) => {
       writes.push(`audit:${record.type}`);
       appendAuditForTests(file, record);
@@ -680,6 +1167,7 @@ test("live scan initializes a scoped checkpoint, writes audit before checkpoint,
   });
   assert.equal(firstSummary.category, "paused-cap");
   assert.equal(firstSummary.generated, 1);
+  assert.equal(JSON.parse(fs.readFileSync(paths.checkpointPath, "utf8")).version, 1);
   assert.deepEqual(writes, [
     "checkpoint:initial",
     "audit:write-intent",
@@ -689,8 +1177,9 @@ test("live scan initializes a scoped checkpoint, writes audit before checkpoint,
   assert.equal(JSON.parse(fs.readFileSync(paths.checkpointPath, "utf8")).lastCompletedKey, `${scope.prefix}a.jpg`);
   const auditRecords = fs.readFileSync(paths.auditPath, "utf8").trim().split("\n").map(JSON.parse);
   assert.equal(auditRecords.length, 2);
+  assert.ok(auditRecords.every((record) => record.version === 2 && !Object.hasOwn(record, "recipeId")));
   assert.equal(auditRecords[0].type, "write-intent");
-  assert.equal(auditRecords[0].derivedKey, generatedKey);
+  assert.equal(auditRecords[0].derivedKey, firstDerivedKey);
   assert.equal(auditRecords[1].type, "write-outcome");
   assert.equal(auditRecords[1].outcome, "generated");
   assert.equal(auditRecords[1].eventId, auditRecords[0].eventId);
@@ -895,7 +1384,7 @@ test("audit failure and checkpoint failure never advance past an unsettled objec
       maxObjects: 1,
       dryRun: false,
       ...paths,
-      generate: async () => generated(),
+      generate: async (params) => generatedFor(params),
       appendAudit: () => { throw new Error("audit disk failed"); },
     });
     assert.equal(summary.category, "failed");
@@ -915,7 +1404,7 @@ test("audit failure and checkpoint failure never advance past an unsettled objec
       maxObjects: 1,
       dryRun: false,
       ...paths,
-      generate: async () => generated(),
+      generate: async (params) => generatedFor(params),
       saveCheckpoint: (file, checkpoint) => {
         saveCount += 1;
         if (saveCount > 1) throw new Error("checkpoint disk failed");
@@ -1212,9 +1701,9 @@ test("writer lock cleanup does not rely on a complete token and leaves a replace
   fs.unlinkSync(lockPath);
 });
 
-test("different checkpoint paths contend for one production lock and release safely", async () => {
+test("v1 and v2 state paths contend for one production lock and release safely", async () => {
   const firstPaths = statePaths();
-  const secondPaths = statePaths();
+  const secondPaths = firstPaths;
   let finishFirst;
   let startedFirst;
   const firstStarted = new Promise((resolve) => { startedFirst = resolve; });
@@ -1245,6 +1734,7 @@ test("different checkpoint paths contend for one production lock and release saf
     },
     maxObjects: 1,
     dryRun: false,
+    recipeId: "v2",
     ...secondPaths,
   });
   assert.equal(secondRun.category, "failed");
@@ -1267,7 +1757,7 @@ test("generated audit is append-only and ambiguous post-PUT replay is not claime
     maxObjects: 1,
     dryRun: false,
     ...paths,
-    generate: async () => generated(),
+    generate: async (params) => generatedFor(params),
     saveCheckpoint: (file, checkpoint) => {
       if (checkpoint.lastCompletedKey !== null) throw new Error("simulated stop after audit/PUT");
       writeCheckpointForTests(file, checkpoint);

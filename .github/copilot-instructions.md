@@ -30,6 +30,7 @@
 - Maintain `IfMatch` for source `GetObject`, `IfNoneMatch: "*"` for derived `PutObject`, and fail closed if provider preconditions are unsupported. Never overwrite originals or prior `v1` derivatives.
 - **One effective writer lock** for both recipe versions whenever they share the production derived destination. The Docker image already uses `HOME=/state`; do not introduce separate locks through different containers/volumes.
 - Newly introduced `v2` checkpoint/audit scope identity must be recipe-bound. It may use a new validated format for `v2`, but legacy `v1` checkpoint/audit structures and fingerprints must remain compatible. `v1` state must not be accepted as `v2`, and vice versa. Never migrate, repair, truncate, delete, or open historical production state during implementation.
+- Production command state paths for `v2` append `.v2` before the file extension; omitted/explicit `v1` continue to use the exact legacy paths. Both recipes must retain the same lock under the shared `HOME=/state`.
 - Keep the current approved production source-region boundary (Tokyo `ap-northeast-1`) and private derived destination (Singapore `ap-southeast-1`) during **this task**. Do not generally widen to other regions/root scans without the owner's exact bucket/region/scope decision and separate testing. This limitation must be reported clearly; it may prevent executing on the new 100-photo collection until approved scope support is added.
 
 ## Scope of 8D-C2 implementation

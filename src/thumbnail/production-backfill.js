@@ -5,7 +5,8 @@ const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 const { evaluateThumbnailEligibility } = require("./eligibility");
 const { generateThumbnailForObject } = require("./generate");
-const { normalizeEtag } = require("./key");
+const { createThumbnailKey, normalizeEtag } = require("./key");
+const { isSupportedThumbnailRecipe } = require("./transform");
 const { MAX_SOURCE_BYTES } = require("./policy");
 const { SUPPORTED_WASABI_REGIONS } = require("../storage/wasabi-regions");
 const { validDerivedKey } = require("../storage/thumbnail-prd-backfill-wasabi");
@@ -13,6 +14,8 @@ const { validDerivedKey } = require("../storage/thumbnail-prd-backfill-wasabi");
 const MAX_OBJECTS = 10;
 const DEFAULT_PAGE_SIZE = 5;
 const CHECKPOINT_VERSION = 1;
+const V2_CHECKPOINT_VERSION = 2;
+const V2_AUDIT_VERSION = 3;
 const LOCK_PATH = path.join(os.homedir(), ".wasabi-drive-thumbnail-backfill-prd.lock");
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const TEST_BUCKET_PATTERN = /(^|[-_.])test/i;
@@ -141,6 +144,7 @@ const parseArguments = (args) => {
     "--page-size",
     "--checkpoint",
     "--audit",
+    "--recipe",
   ]);
   const values = new Map();
   const flags = new Set();
@@ -167,6 +171,8 @@ const parseArguments = (args) => {
   for (const flag of ["--source-bucket", "--source-region", "--prefix", "--max-objects"]) {
     if (!values.has(flag)) throw new Error("invalid-arguments");
   }
+  const recipeId = values.get("--recipe") ?? "v1";
+  if (!isSupportedThumbnailRecipe(recipeId)) throw new Error("invalid-arguments");
   if (flags.has("--execute") !== flags.has("--confirm-prd-backfill")) {
     throw new Error("invalid-arguments");
   }
@@ -178,7 +184,24 @@ const parseArguments = (args) => {
     pageSize: values.get("--page-size"),
     checkpoint: values.get("--checkpoint"),
     audit: values.get("--audit"),
+    recipeId,
     execute: flags.has("--execute"),
+  };
+};
+
+const recipeStatePaths = ({ recipeId = "v1", checkpointPath, auditPath }) => {
+  if (!isSupportedThumbnailRecipe(recipeId)) {
+    throw new Error("unsupported-thumbnail-recipe");
+  }
+  if (recipeId === "v1") return { checkpointPath, auditPath };
+  const addRecipeSuffix = (target) => {
+    if (typeof target !== "string") return target;
+    const parsed = path.parse(target);
+    return path.join(parsed.dir, `${parsed.name}.v2${parsed.ext}`);
+  };
+  return {
+    checkpointPath: addRecipeSuffix(checkpointPath),
+    auditPath: addRecipeSuffix(auditPath),
   };
 };
 
@@ -313,13 +336,45 @@ const scopeFingerprint = (scope) =>
     scope.destinationRegion,
   ])).digest("hex");
 
-const buildCheckpoint = (scope, lastCompletedKey) => ({
-  version: CHECKPOINT_VERSION,
-  scope,
-  lastCompletedKey,
-});
+const processingFingerprint = (scope, recipeId = "v1") => {
+  if (!isSupportedThumbnailRecipe(recipeId)) {
+    throw new Error("unsupported-thumbnail-recipe");
+  }
+  return recipeId === "v1"
+    ? scopeFingerprint(scope)
+    : crypto.createHash("sha256").update(JSON.stringify([
+      scope.sourceBucket,
+      scope.sourceRegion,
+      scope.prefix,
+      scope.destinationBucket,
+      scope.destinationRegion,
+      recipeId,
+    ])).digest("hex");
+};
 
-const readCheckpoint = (checkpointPath, scope, assertPrivatePathImpl = assertPrivatePath) => {
+const buildCheckpoint = (scope, lastCompletedKey, recipeId = "v1") => {
+  if (!isSupportedThumbnailRecipe(recipeId)) {
+    throw new Error("unsupported-thumbnail-recipe");
+  }
+  return recipeId === "v1"
+    ? { version: CHECKPOINT_VERSION, scope, lastCompletedKey }
+    : {
+      version: V2_CHECKPOINT_VERSION,
+      recipeId,
+      scope,
+      lastCompletedKey,
+    };
+};
+
+const readCheckpoint = (
+  checkpointPath,
+  scope,
+  assertPrivatePathImpl = assertPrivatePath,
+  recipeId = "v1",
+) => {
+  if (!isSupportedThumbnailRecipe(recipeId)) {
+    throw new Error("unsupported-thumbnail-recipe");
+  }
   let parsed;
   let descriptor;
   try {
@@ -349,8 +404,13 @@ const readCheckpoint = (checkpointPath, scope, assertPrivatePathImpl = assertPri
     !parsed
     || typeof parsed !== "object"
     || Array.isArray(parsed)
-    || Object.keys(parsed).sort().join(",") !== "lastCompletedKey,scope,version"
-    || parsed.version !== CHECKPOINT_VERSION
+    || Object.keys(parsed).sort().join(",") !== (
+      recipeId === "v1"
+        ? "lastCompletedKey,scope,version"
+        : "lastCompletedKey,recipeId,scope,version"
+    )
+    || parsed.version !== (recipeId === "v1" ? CHECKPOINT_VERSION : V2_CHECKPOINT_VERSION)
+    || (recipeId === "v2" && parsed.recipeId !== recipeId)
     || (parsed.lastCompletedKey !== null && typeof parsed.lastCompletedKey !== "string")
     || (
       parsed.lastCompletedKey !== null
@@ -504,7 +564,18 @@ const releaseWriterLock = (lock) => {
 };
 
 const AUDIT_VERSION = 2;
-const parseAuditRecords = (auditPath, scopeId, assertPrivatePathImpl = assertPrivatePath) => {
+const auditVersionForRecipe = (recipeId) =>
+  recipeId === "v1" ? AUDIT_VERSION : V2_AUDIT_VERSION;
+
+const parseAuditRecords = (
+  auditPath,
+  scopeId,
+  assertPrivatePathImpl = assertPrivatePath,
+  recipeId = "v1",
+) => {
+  if (!isSupportedThumbnailRecipe(recipeId)) {
+    throw new Error("unsupported-thumbnail-recipe");
+  }
   let descriptor;
   let text;
   try {
@@ -542,10 +613,11 @@ const parseAuditRecords = (auditPath, scopeId, assertPrivatePathImpl = assertPri
       || typeof record !== "object"
       || Array.isArray(record)
       || record.scopeId !== scopeId
+      || (recipeId === "v2" && record.recipeId !== recipeId)
       || typeof record.timestamp !== "string"
       || !Number.isFinite(Date.parse(record.timestamp))
       || new Date(record.timestamp).toISOString() !== record.timestamp
-      || !validDerivedKey(record.derivedKey)
+      || !validDerivedKey(record.derivedKey, recipeId)
     ) throw new Error("invalid-audit-record");
     const pending = [...intents.entries()].find(([, intent]) => intent.outcome === null);
     if (
@@ -554,23 +626,24 @@ const parseAuditRecords = (auditPath, scopeId, assertPrivatePathImpl = assertPri
     ) throw new Error("invalid-audit-record");
 
     const keys = Object.keys(record).sort().join(",");
-    if (record.version === CHECKPOINT_VERSION) {
+    const recipeField = recipeId === "v2" ? ",recipeId" : "";
+    if (recipeId === "v1" && record.version === CHECKPOINT_VERSION) {
       if (
         keys !== "derivedKey,scopeId,status,timestamp,version"
         || record.status !== "generated"
       ) throw new Error("invalid-audit-record");
-    } else if (record.version === AUDIT_VERSION) {
+    } else if (record.version === auditVersionForRecipe(recipeId)) {
       if (!/^[a-f0-9]{32}$/.test(record.eventId)) throw new Error("invalid-audit-record");
       if (record.type === "write-intent") {
         if (
-          keys !== "derivedKey,eventId,scopeId,timestamp,type,version"
+          keys !== `derivedKey,eventId${recipeField},scopeId,timestamp,type,version`
           || intents.has(record.eventId)
         ) throw new Error("invalid-audit-record");
         intents.set(record.eventId, { derivedKey: record.derivedKey, outcome: null });
       } else if (record.type === "write-outcome") {
         const previousOutcome = intents.get(record.eventId)?.outcome;
         if (
-          keys !== "derivedKey,eventId,outcome,scopeId,timestamp,type,version"
+          keys !== `derivedKey,eventId,outcome${recipeField},scopeId,timestamp,type,version`
           || !["generated", "not-generated", "unknown"].includes(record.outcome)
           || !intents.has(record.eventId)
           || intents.get(record.eventId).derivedKey !== record.derivedKey
@@ -596,14 +669,17 @@ const appendAuditRecord = (auditPath, record, options = {}) => {
     | (fs.constants.O_NOFOLLOW ?? 0);
   let descriptor;
   try {
+    const recipeId = record.recipeId ?? "v1";
+    if (!isSupportedThumbnailRecipe(recipeId)) throw new Error("invalid-audit-record");
     const current = parseAuditRecords(
       auditPath,
       record.scopeId,
       options.assertPrivatePath ?? assertPrivatePath,
+      recipeId,
     );
     if (
-      record.version !== AUDIT_VERSION
-      || !validDerivedKey(record.derivedKey)
+      record.version !== auditVersionForRecipe(recipeId)
+      || !validDerivedKey(record.derivedKey, recipeId)
       || typeof record.scopeId !== "string"
       || !/^[a-f0-9]{64}$/.test(record.scopeId)
       || typeof record.timestamp !== "string"
@@ -616,7 +692,7 @@ const appendAuditRecord = (auditPath, record, options = {}) => {
     if (record.type === "write-intent") {
       if (
         Object.keys(record).sort().join(",")
-          !== "derivedKey,eventId,scopeId,timestamp,type,version"
+          !== `derivedKey,eventId${recipeId === "v2" ? ",recipeId" : ""},scopeId,timestamp,type,version`
         || !/^[a-f0-9]{32}$/.test(record.eventId)
         || current.intents.has(record.eventId)
         || [...current.intents.values()].some((intent) => intent.outcome === null)
@@ -625,7 +701,7 @@ const appendAuditRecord = (auditPath, record, options = {}) => {
       const intent = current.intents.get(record.eventId);
       if (
         Object.keys(record).sort().join(",")
-          !== "derivedKey,eventId,outcome,scopeId,timestamp,type,version"
+          !== `derivedKey,eventId,outcome${recipeId === "v2" ? ",recipeId" : ""},scopeId,timestamp,type,version`
         || !["generated", "not-generated", "unknown"].includes(record.outcome)
         || !intent
         || (
@@ -681,6 +757,7 @@ const classifyObject = async ({
   object,
   storage,
   dryRun,
+  recipeId = "v1",
   generate = generateThumbnailForObject,
   recordWriteIntent,
   recordWriteOutcome,
@@ -716,6 +793,7 @@ const classifyObject = async ({
     dryRun,
     expectedEtag: object.ETag,
     expectedSize: size,
+    recipeId,
     recordWriteIntent,
     recordWriteOutcome,
   });
@@ -780,6 +858,7 @@ const runProductionBackfill = async ({
   dryRun = true,
   checkpointPath,
   auditPath,
+  recipeId = "v1",
   generate = generateThumbnailForObject,
   saveCheckpoint = writeCheckpointAtomically,
   appendAudit = appendAuditRecord,
@@ -803,11 +882,13 @@ const runProductionBackfill = async ({
     || !Number.isSafeInteger(pageSize)
     || pageSize < 1
     || pageSize > 10
+    || !isSupportedThumbnailRecipe(recipeId)
     || typeof storage?.listSourcePage !== "function"
   ) {
     throw new Error("invalid-production-backfill-options");
   }
 
+  const selectedStatePaths = recipeStatePaths({ recipeId, checkpointPath, auditPath });
   let localPaths;
   if (dryRun) {
     if (checkpointPath !== undefined || auditPath !== undefined) {
@@ -815,7 +896,10 @@ const runProductionBackfill = async ({
     }
   } else {
     if (platform === "win32") throw new Error("directory-sync-unsupported");
-    localPaths = validateStatePaths({ checkpointPath, auditPath, assertPrivatePathImpl });
+    localPaths = validateStatePaths({
+      ...selectedStatePaths,
+      assertPrivatePathImpl,
+    });
   }
 
   const summary = baseSummary(dryRun);
@@ -827,15 +911,17 @@ const runProductionBackfill = async ({
       lock = acquireLock();
       const auditState = parseAuditRecords(
         localPaths.auditPath,
-        scopeFingerprint(scope),
+        processingFingerprint(scope, recipeId),
         assertPrivatePathImpl,
+        recipeId,
       );
       const unresolved = [...auditState.intents.entries()].find(([, intent]) => intent.outcome === null);
       if (unresolved) {
         const [eventId, intent] = unresolved;
         appendAudit(localPaths.auditPath, {
-          version: AUDIT_VERSION,
-          scopeId: scopeFingerprint(scope),
+          version: auditVersionForRecipe(recipeId),
+          ...(recipeId === "v2" ? { recipeId } : {}),
+          scopeId: processingFingerprint(scope, recipeId),
           timestamp: new Date().toISOString(),
           type: "write-outcome",
           eventId,
@@ -852,11 +938,12 @@ const runProductionBackfill = async ({
           localPaths.checkpointPath,
           scope,
           assertPrivatePathImpl,
+          recipeId,
         ).lastCompletedKey;
       } else {
         saveCheckpoint(
           localPaths.checkpointPath,
-          buildCheckpoint(scope, null),
+          buildCheckpoint(scope, null, recipeId),
         );
       }
     }
@@ -890,8 +977,9 @@ const runProductionBackfill = async ({
         const recordWriteIntent = (derivedKey) => {
           writeIntentId = crypto.randomUUID().replaceAll("-", "");
           appendAudit(localPaths.auditPath, {
-            version: AUDIT_VERSION,
-            scopeId: scopeFingerprint(scope),
+            version: auditVersionForRecipe(recipeId),
+            ...(recipeId === "v2" ? { recipeId } : {}),
+            scopeId: processingFingerprint(scope, recipeId),
             timestamp: new Date().toISOString(),
             type: "write-intent",
             eventId: writeIntentId,
@@ -902,8 +990,9 @@ const runProductionBackfill = async ({
         const recordWriteOutcome = (eventId, derivedKey, outcome) => {
           if (!eventId || eventId !== writeIntentId) throw new Error("invalid-write-outcome");
           appendAudit(localPaths.auditPath, {
-            version: AUDIT_VERSION,
-            scopeId: scopeFingerprint(scope),
+            version: auditVersionForRecipe(recipeId),
+            ...(recipeId === "v2" ? { recipeId } : {}),
+            scopeId: processingFingerprint(scope, recipeId),
             timestamp: new Date().toISOString(),
             type: "write-outcome",
             eventId,
@@ -917,6 +1006,7 @@ const runProductionBackfill = async ({
           object,
           storage,
           dryRun,
+          recipeId,
           generate,
           recordWriteIntent: dryRun ? undefined : recordWriteIntent,
           recordWriteOutcome: dryRun ? undefined : recordWriteOutcome,
@@ -931,7 +1021,17 @@ const runProductionBackfill = async ({
           throw new Error("invalid-object-result");
         }
         if (!dryRun && category === "generated") {
-          if (!validDerivedKey(result.derivedKey)) throw new Error("invalid-derived-key");
+          const expectedDerivedKey = createThumbnailKey({
+            sourceRegion: scope.sourceRegion,
+            sourceBucket: scope.sourceBucket,
+            completeSourceKey: object.Key,
+            normalizedETag: normalizeEtag(object.ETag),
+            formatVersion: recipeId,
+          });
+          if (
+            !validDerivedKey(result.derivedKey, recipeId)
+            || result.derivedKey !== expectedDerivedKey
+          ) throw new Error("invalid-derived-key");
           if (!writeIntentId || writeOutcome !== "generated") {
             throw new Error("generated-without-audit-outcome");
           }
@@ -944,7 +1044,7 @@ const runProductionBackfill = async ({
         if (!dryRun) {
           saveCheckpoint(
             localPaths.checkpointPath,
-            buildCheckpoint(scope, object.Key),
+            buildCheckpoint(scope, object.Key, recipeId),
           );
           lastCompletedKey = object.Key;
         }
@@ -994,6 +1094,8 @@ module.exports = {
   parseArguments,
   parseAuditRecords,
   parseBoundedInteger,
+  processingFingerprint,
+  recipeStatePaths,
   readCheckpoint,
   runProductionBackfill,
   validateBucket,

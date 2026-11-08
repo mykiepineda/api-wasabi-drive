@@ -3,6 +3,7 @@ const {
   loadProductionBackfillConfig,
   parseArguments,
   parseBoundedInteger,
+  recipeStatePaths,
   runProductionBackfill,
   validateSourceScope,
   validateStatePaths,
@@ -65,13 +66,13 @@ const main = async (
     const pageSize = options.pageSize === undefined
       ? 5
       : parseBoundedInteger(options.pageSize, 1, 10, "invalid-page-size");
-    let statePaths;
     if (options.execute) {
       if (platform === "win32") throw new Error("directory-sync-unsupported");
-      statePaths = validateStatePaths({
+      validateStatePaths(recipeStatePaths({
+        recipeId: options.recipeId,
         checkpointPath: options.checkpoint,
         auditPath: options.audit,
-      });
+      }));
     } else if (options.checkpoint !== undefined || options.audit !== undefined) {
       throw new Error("dry-run-local-state-not-allowed");
     }
@@ -85,6 +86,7 @@ const main = async (
     };
     const storage = createStorage({
       scope,
+      recipeId: options.recipeId,
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
     });
@@ -94,8 +96,9 @@ const main = async (
       maxObjects,
       pageSize,
       dryRun: !options.execute,
-      checkpointPath: statePaths?.checkpointPath,
-      auditPath: statePaths?.auditPath,
+      checkpointPath: options.checkpoint,
+      auditPath: options.audit,
+      recipeId: options.recipeId,
       platform,
     });
     const summary = safeSummary(result);

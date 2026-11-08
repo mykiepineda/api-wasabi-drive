@@ -10,11 +10,18 @@ const { MAX_SOURCE_BYTES } = require("../thumbnail/policy");
 const { endpointForRegion, SUPPORTED_WASABI_REGIONS } = require("./wasabi-regions");
 const { ThumbnailStorageError } = require("./thumbnail-wasabi");
 
-const DERIVED_KEY_PATTERN = /^v1\/([a-f0-9]{2})\/([a-f0-9]{64})\.webp$/;
+const DERIVED_KEY_PATTERNS = Object.freeze({
+  v1: /^v1\/([a-f0-9]{2})\/([a-f0-9]{64})\.webp$/,
+  v2: /^v2\/([a-f0-9]{2})\/([a-f0-9]{64})\.webp$/,
+});
 
-const validDerivedKey = (key) => {
+const validDerivedKey = (key, recipeId = "v1") => {
   if (typeof key !== "string") return false;
-  const match = DERIVED_KEY_PATTERN.exec(key);
+  const pattern = Object.hasOwn(DERIVED_KEY_PATTERNS, recipeId)
+    ? DERIVED_KEY_PATTERNS[recipeId]
+    : undefined;
+  if (!pattern) return false;
+  const match = pattern.exec(key);
   return Boolean(match && match[1] === match[2].slice(0, 2));
 };
 
@@ -31,6 +38,7 @@ const validBucketName = (bucket) =>
 
 const createThumbnailPrdBackfillStorage = ({
   scope,
+  recipeId = "v1",
   accessKeyId,
   secretAccessKey,
   createClient = (options) => new S3Client(options),
@@ -63,12 +71,13 @@ const createThumbnailPrdBackfillStorage = ({
     || secretAccessKey !== secretAccessKey.trim()
     || /[\u0000-\u001f\u007f]/.test(secretAccessKey)
     || typeof createClient !== "function"
+    || !Object.hasOwn(DERIVED_KEY_PATTERNS, recipeId)
   ) {
     throw new ThumbnailStorageError("invalid-prd-backfill-storage-configuration");
   }
 
   const clients = new Map();
-  const approvedDerivedKeys = new Set();
+  const approvedDerivedKeys = new Map();
   const getClient = (region) => {
     if (!SUPPORTED_WASABI_REGIONS.has(region)) {
       throw new ThumbnailStorageError("invalid-region");
@@ -98,8 +107,8 @@ const createThumbnailPrdBackfillStorage = ({
     if (
       bucket !== scope.destinationBucket
       || region !== scope.destinationRegion
-      || !validDerivedKey(key)
-      || !approvedDerivedKeys.has(key)
+      || !validDerivedKey(key, recipeId)
+      || ![...approvedDerivedKeys.values()].includes(key)
     ) {
       throw new ThumbnailStorageError("invalid-destination-scope");
     }
@@ -180,12 +189,15 @@ const createThumbnailPrdBackfillStorage = ({
         "head-source",
       );
       const etag = normalizeEtag(result?.ETag);
+      const sourceIdentity = JSON.stringify([scope.sourceRegion, scope.sourceBucket, key]);
+      approvedDerivedKeys.delete(sourceIdentity);
       if (etag) {
-        approvedDerivedKeys.add(createThumbnailKey({
+        approvedDerivedKeys.set(sourceIdentity, createThumbnailKey({
           sourceRegion: scope.sourceRegion,
           sourceBucket: scope.sourceBucket,
           completeSourceKey: key,
           normalizedETag: etag,
+          formatVersion: recipeId,
         }));
       }
       return { etag: result?.ETag, size: result?.ContentLength };

@@ -8,6 +8,7 @@ const { generateThumbnailForObject } = require("./generate");
 const { createThumbnailKey, normalizeEtag } = require("./key");
 const { isSupportedThumbnailRecipe } = require("./transform");
 const { MAX_SOURCE_BYTES } = require("./policy");
+const { isAllowedProductionSourceRegion } = require("./production-backfill-region");
 const { SUPPORTED_WASABI_REGIONS } = require("../storage/wasabi-regions");
 const { validDerivedKey } = require("../storage/thumbnail-prd-backfill-wasabi");
 
@@ -85,14 +86,15 @@ const validatePrefix = (prefix) => {
   return prefix;
 };
 
-const loadProductionBackfillConfig = (env) => {
+const loadProductionBackfillConfig = (env, recipeId = "v1") => {
   const config = Object.fromEntries(
     Object.entries(CONFIG_KEYS).map(([key, envName]) => [key, env[envName]]),
   );
   if (
     Object.values(config).some((value) => !isSafeValue(value))
     || config.stage !== "prd"
-    || config.sourceRegion !== "ap-northeast-1"
+    || !isSupportedThumbnailRecipe(recipeId)
+    || !isAllowedProductionSourceRegion(recipeId, config.sourceRegion)
     || config.destinationRegion !== "ap-southeast-1"
     || (env.DEPLOYMENT_STAGE !== undefined && env.DEPLOYMENT_STAGE !== "prd")
   ) {
@@ -125,9 +127,11 @@ const loadProductionBackfillConfig = (env) => {
   return config;
 };
 
-const validateSourceScope = (options, config) => {
+const validateSourceScope = (options, config, recipeId = options.recipeId ?? "v1") => {
   if (
-    options.sourceBucket !== config.sourceBucket
+    !isSupportedThumbnailRecipe(recipeId)
+    || !isAllowedProductionSourceRegion(recipeId, config.sourceRegion)
+    || options.sourceBucket !== config.sourceBucket
     || options.sourceRegion !== config.sourceRegion
     || options.prefix !== config.prefix
   ) {
@@ -870,7 +874,7 @@ const runProductionBackfill = async ({
   if (
     !scope
     || !SUPPORTED_WASABI_REGIONS.has(scope.sourceRegion)
-    || scope.sourceRegion !== "ap-northeast-1"
+    || !isAllowedProductionSourceRegion(recipeId, scope.sourceRegion)
     || scope.destinationRegion !== "ap-southeast-1"
     || validateBucket(scope.sourceBucket) !== scope.sourceBucket
     || validateBucket(scope.destinationBucket) !== scope.destinationBucket

@@ -120,7 +120,7 @@ The page size is bounded (default 100; maximum 1000), and `--max-objects` is man
 
 ## Phase 8C-B2-B2 production backfill (implementation only; NOT YET AUTHORIZED)
 
-The local production backfill has a separate CLI and dedicated `THUMBNAIL_PRD_BACKFILL_*` credentials. It does not load `.env` or fall back to API (`WASABI_*`), TEST, preflight-audit, AWS profile, metadata-service, or deployment credentials. Configure only the one owner-approved Tokyo source scope and the private Singapore derived bucket in the local process environment; do not put real values in this repository. The intended initial source is the owner's complete 13-image Tokyo prefix validated by B2-B1; that metadata preflight is not itself authorization for this CLI. The CLI requires exact matches for the configured source bucket, Tokyo region (`ap-northeast-1`) and nonempty source prefix. The derived region is fixed to Singapore (`ap-southeast-1`), while its bucket name is supplied through local configuration, not inferred from a name or hardcoded by the tool.
+The local production backfill has a separate CLI and dedicated `THUMBNAIL_PRD_BACKFILL_*` credentials. It does not load `.env` or fall back to API (`WASABI_*`), TEST, preflight-audit, AWS profile, metadata-service, or deployment credentials. Configure only the one owner-approved source scope and the private Singapore derived bucket in the local process environment; do not put real values in this repository. The CLI requires exact matches for the configured source bucket, source region and nonempty prefix. Recipe `v1` permits only Tokyo (`ap-northeast-1`); only an explicit `--recipe v2` permits Tokyo or Sydney (`ap-southeast-2`). Omitting `--recipe` remains `v1`, so Sydney is rejected by default. The derived region is fixed to Singapore (`ap-southeast-1`), while its bucket name is supplied through local configuration, not inferred from a name or hardcoded by the tool.
 
 Placeholder-only local configuration (use a dedicated production backfill sub-user; never reuse other credentials):
 
@@ -159,10 +159,18 @@ npm run thumbnail:backfill:prd -- --source-bucket "<owner-approved-source-bucket
 
 The v1 recipe remains unchanged: deterministic v1 key, maximum 512-pixel edge, WebP quality 80, supported standard image formats and CR2 embedded previews, and a 25 MiB source cap. The fixed v2 recipe uses the same source eligibility and size limits. NEF and HEIC/HEIF remain unsupported. Destination objects remain private. Local development and tests use injected mocks only; they do not authorize production access. The owner controls the later rollout gate, including any approved TEST rehearsal and first photographs.
 
+The TEST single-object pilot and the legacy TEST bulk driver do **not** exercise the production runner's recipe-specific checkpoint, append-only audit, or shared writer-lock path. The unit tests use mocked storage and local synthetic state; they are not a live multi-object TEST rehearsal.
+
 The following v2 command is a syntax example only. **NOT AUTHORIZED FOR LIVE USE.** It uses placeholder values and still requires the separate owner approval gate:
 
 ```sh
 npm run thumbnail:backfill:prd -- --source-bucket "<owner-approved-source-bucket>" --source-region "ap-northeast-1" --prefix "<owner-approved-prefix>/" --max-objects 2 --recipe v2 --checkpoint "/private/thumbnail-checkpoint.json" --audit "/private/thumbnail-audit.jsonl" --execute --confirm-prd-backfill
+```
+
+The following Sydney v2 command is **syntax-only and NOT AUTHORIZED for live or dry-run access**. Sydney requires explicit `--recipe v2`; this placeholder command is not permission to inspect or process any source:
+
+```sh
+npm run thumbnail:backfill:prd -- --source-bucket "<owner-approved-source-bucket>" --source-region "ap-southeast-2" --prefix "<owner-approved-prefix>/" --max-objects 2 --recipe v2
 ```
 
 ## Phase 8 Task 8C-A1 — Recorded findings (October 2026)

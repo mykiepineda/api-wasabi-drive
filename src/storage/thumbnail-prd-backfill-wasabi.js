@@ -7,6 +7,7 @@ const {
 } = require("@aws-sdk/client-s3");
 const { createThumbnailKey, normalizeEtag } = require("../thumbnail/key");
 const { MAX_SOURCE_BYTES } = require("../thumbnail/policy");
+const { isAllowedProductionSourceRegion } = require("../thumbnail/production-backfill-region");
 const { endpointForRegion, SUPPORTED_WASABI_REGIONS } = require("./wasabi-regions");
 const { ThumbnailStorageError } = require("./thumbnail-wasabi");
 
@@ -50,7 +51,7 @@ const createThumbnailPrdBackfillStorage = ({
     || typeof scope.prefix !== "string"
     || !validBucketName(scope.destinationBucket)
     || typeof scope.destinationRegion !== "string"
-    || scope.sourceRegion !== "ap-northeast-1"
+    || !isAllowedProductionSourceRegion(recipeId, scope.sourceRegion)
     || !SUPPORTED_WASABI_REGIONS.has(scope.sourceRegion)
     || scope.destinationRegion !== "ap-southeast-1"
     || scope.sourceBucket === scope.destinationBucket

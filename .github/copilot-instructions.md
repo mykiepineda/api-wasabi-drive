@@ -1,36 +1,44 @@
-# Wasabi Drive backend - Copilot instructions, Phase 8D-C2a
+# Wasabi Drive backend — GitHub Copilot instructions (Phase 8D-C2b)
 
-**Active task:** Add explicit immutable `v2` (C1) support to the existing **single-object TEST pilot**. This is an implementation-only task; no cloud use, deployment, or live processing is authorized.
+**Active task: add Sydney (`ap-southeast-2`) as an explicitly supported PRD source region for the immutable C1/`v2` thumbnail backfill. This is a LOCAL CODE-ONLY task. Do not touch Wasabi, AWS, Docker state, or deployed services.**
 
-## Owner decisions and known baseline
+## Ownership and authoritative context
 
-- The owner is the technical/architecture decision-maker; Copilot implements only focused approved work, and ChatGPT reviews the resulting source.
-- Phase 8D-C1 (`v2` recipe) and C2 (`v2`-aware, resumable PRD backfill) are reported merged; `wasabi-drive-test.web.app` is owner-validated after C2. Independently inspect the local checkout; do not assume a particular live commit SHA.
-- Approved immutable `v2` recipe: 200 x 190 pixels, centre crop, WebP quality 80, orientation-safe, no enlargement. Too-small sources/previews are skipped. Preserve `v1` unchanged and default wherever previously implicit.
-- The approved **future serving approach** is deterministic backend-derived `v2` thumbnail keys and temporary signed URLs, without a per-file whitelist or manifest. The current React frontend already falls back to the original once on a thumbnail failure. These are **not** tasks for C2a.
-- New ~100-photo source collection is in Wasabi Sydney `ap-southeast-2`; its bucket stage, exact prefix and production permissions have NOT been established in this code task. Do not read this collection or use it as TEST material.
-- A separate later C2b task will consider source-region support for Sydney -> private Singapore `ap-southeast-1` in the **production** backfill; preserve the current Tokyo-only production region guard during C2a.
+- The owner remains the technical/architecture decision-maker. GitHub Copilot implements focused tasks; the owner and ChatGPT review before committing, merging, granting permissions, or performing any storage operation.
+- The owner reports Phase 8D-C1 (`v2` recipe), C2 (recipe-aware PRD backfill), and C2a (`v2` single-object TEST pilot) merged. TEST site remains healthy; a Sydney TEST object produced a 200 x 190 WebP, 4,980 bytes, and the owner visually verified it in the TEST-derived bucket. This verifies single-object generation/write only, NOT multi-object checkpoint/restart/recovery behavior.
+- The next approximately 100-photo collection is in Sydney (`ap-southeast-2`); its stage, exact bucket, folder prefix, and permitted operations have not been stated here. NEVER assume it is a TEST or PRD source.
+- The approved immutable C1 recipe is **`v2`: centre-cropped 200 x 190 WebP at quality 80, orientation-safe, without enlarging small images**. Existing `v1` remains immutable at 512 maximum edge/quality 80.
+- The eventual browsing design is server-derived deterministic `v2` keys and temporary read-only thumbnail URLs, with no per-file whitelist, no per-object `HEAD` during normal browsing, and the existing one-time frontend fallback to the original. This is OUT OF SCOPE for C2b.
+- Read the current checkout and live repository files as authoritative. Previously supplied reviewed snapshots may be older than the owner's current `master`. Do not assume the merge SHA.
 
-## Hard boundaries
+## Hard constraints
 
-- Inspect `git branch --show-current`, `git rev-parse HEAD`, `git status --short`, `AGENTS.md`, current Copilot instructions and the relevant modules/tests first. Work on a focused branch from current master, never edit or commit directly to master. If unexpected modifications exist, report them rather than stashing/resetting them.
-- Never open, print, stage, modify or commit private `.env*`, credentials, real filenames/key inventories, private Docker volumes, historical checkpoints/audits or backups. Ignore untracked `.env.local` without inspecting it.
-- Do not call Wasabi/AWS, use Bruno integration tests, install/deploy infrastructure, run live pilot/backfill tools, commit, push, open PR, merge or deploy. Synthetic/mock tests under Node.js 24 only. If dependencies need installation, use `npm ci` with the locked versions, without modifying dependency versions.
-- Preserve existing Node.js 24/CommonJS stack, Express authentication/authorization, private multi-region storage, internal-bucket hiding, signing identity, fallback, Docker safety, conditional `IfMatch` source reads and `IfNoneMatch: "*"` derived writes.
-- Preserve test-stage isolation: TEST source and destination buckets must pass existing TEST-name guards, no PRD/production bucket acceptance, separate TEST credentials, Singapore private derived destination. Existing test CLI defaults and `v1` execution behavior must not change.
-- No SNS/SQS, Lambda thumbnail worker, new database, configuration manifest, arbitrary image sizes/quality, unrelated refactors, region guard relaxation, or new production privileges.
+- Before edits inspect `git branch --show-current`, `git rev-parse HEAD`, `git status --short`, `AGENTS.md`, `.github/copilot-instructions.md`, source and tests. Do not commit on `master`, reset/stash user changes, or access untracked `.env.local` or other private files.
+- DO NOT make live calls to Wasabi/AWS, request new permissions, run pilot/backfill/preflight/integration commands, build/run Docker with credentials or state, touch private checkpoint/audit/backup volumes, commit, push, merge, deploy, or change deployment workflows. Use synthetic fixtures and mocked providers only.
+- Preserve Node.js 24, CommonJS, Express/route-service-storage separation, Serverless Framework, private source/derived objects, Entra authentication/authorization, internal-bucket hiding, dedicated credentials, stage isolation, and unchanged frontend/API contracts.
+- Preserve **v1 Tokyo-only** PRD source (`ap-northeast-1`) without changing its existing runtime output, key identity, state schema, checkpoint/audit files, default recipe or processing controls.
+- For **explicit `v2` only**, permit either Tokyo (`ap-northeast-1`) or Sydney (`ap-southeast-2`) PRD source. Destination remains pinned to private Singapore (`ap-southeast-1`) and must differ from source bucket. Do not generalize to all `SUPPORTED_WASABI_REGIONS` or enable PRD writes against TEST bucket names.
+- Do not relax current required nonempty, slash-terminated source prefix, exact configured bucket/region/prefix matching, 10-examined-object cap, page-size limits, conditional `IfMatch` source GET and `IfNoneMatch: "*"` derived PUT, audit intent/outcome durability, fail-closed uncertain writes, lock path, or recipe-specific checkpoint/audit identity. State paths remain private and outside Git.
+- Keep a single effective writer lock for the same mounted state HOME; separate volumes/machines do NOT share this lock. Do not create per-region or per-recipe lock paths.
+- Do not alter the existing single-object TEST pilot, legacy bulk TEST driver, C1 image generation, CR2 processing, API signer, config of thumbnail serving, Serverless/GitHub Actions, dependencies, or frontend. No database, manifest, queue, or new cloud service.
 
-## Approved C2a implementation
+## Focused C2b code task
 
-- Inspect `scripts/thumbnail-single-pilot.js`, `src/thumbnail/generate.js`, `src/thumbnail/transform.js`, `src/storage/thumbnail-wasabi.js`, `test/thumbnail-single-pilot.test.js`, `test/thumbnail-service.test.js` and README before editing.
-- Add an OPTIONAL value flag `--recipe` to the existing `thumbnail:pilot` (single-object TEST) CLI, accepting only exact `v1` and `v2` recipe IDs, with omitted flag defaulting to existing `v1` behavior. Reject duplicates, unsupported IDs, missing values and unknown flags fail-closed.
-- Pass the selected `recipeId` to `generateThumbnailForObject()` through the existing service interface. Reuse the deterministic key identity, fixed recipes and existing conditional source/read and derivative/write guards. Do not implement a new image-processing path or unconditionally write any key.
-- Preserve dry-run default, existing two explicit TEST write confirmations, TEST environment/bucket checks and sanitized output. No changes to PRD runner, API signer, test bulk backfill, CloudFormation, Serverless or frontend.
-- Add synthetic tests proving default `v1` behavior, explicit `v1`, successful `v2` recipe propagation and source-derived key, invalid flag rejection, no storage calls on invalid stage/scope, and unchanged dry-run vs execution confirmation. Preserve all earlier tests without weakening them.
-- Update README narrowly to show `--recipe v2` as a future TEST pilot example clearly labelled **not authorized for live execution by this task**.
+1. Inspect `src/thumbnail/production-backfill.js` (including `loadProductionBackfillConfig`, `runProductionBackfill`, `parseArguments`, fingerprint/checkpoint/audit/lock logic), `src/storage/thumbnail-prd-backfill-wasabi.js`, `scripts/thumbnail-backfill-prd.js`, and `test/thumbnail-production-backfill.test.js`.
+2. Bind source-region acceptance to the **validated recipe ID**, consistently in configuration loading, runner validation, and storage-adapter construction: `v1` only Tokyo; `v2` Tokyo or Sydney. Preserve all other production safety checks. An omitted recipe must continue to resolve to `v1`, so omitting `--recipe` with Sydney must FAIL CLOSED.
+3. Prefer a minimal shared pure validation helper if it genuinely prevents policy drift, but do not refactor unrelated code. Unknown recipes, stage/bucket mismatches, arbitrary regions, destination-region changes and root/empty prefixes must continue to fail before any storage operation.
+4. Preserve the identity payload exactly: `[formatVersion, sourceRegion, sourceBucket, completeSourceKey, normalizedETag]`. Do not trim keys, rehash by destination region, or modify the hash algorithm. `v2` Sydney and `v2` Tokyo must use distinct identities for the same other inputs.
+5. Add focused synthetic tests proving the region/recipe matrix at all entrypoints; validations reject before client/network work or state writes; correct Sydney S3 endpoint is used for approved source operations, Singapore for derived; bounded dry-run is read-only; conditional operations, resume identity, audit/lock and all v1 regressions survive. Test more than one object/pagination and interruption/resume with injected mocks if available within the existing suite.
+6. Make only narrowly necessary README/instruction changes. Clearly label any command as syntax-only and NOT authorized to run. Do not print private source identifiers or credentials.
 
-## Validation / deliverables
+## Validation and stop gate
 
-- Execute `node --version`, `npm test`, `git diff --check`, `git status --short` under Node.js 24 and report exact totals, skips and failures. No live network/cloud tools.
-- Return a concise file-by-file change summary, security/compatibility review, expected TEST-only command syntax (without real bucket/object values), unresolved questions, and whether the branch is ready for independent review.
-- Stop before committing or merging. The owner will approve the branch and later authorize TEST-only operations separately.
+- Use locked dependencies under Node.js 24: `node --version`, `npm test`, `git diff --check`, `git status --short`; report actual totals, skips, failures, and changed files. No live network/cloud operations.
+- Report where all recipe/region guards are enforced and whether current TEST tooling genuinely exercises the production checkpoint/audit path (it currently does not). Distinguish a mocked test from a live multi-object TEST rehearsal.
+- Stop. Leave changes uncommitted for independent review. The owner will authorize any PR/merge, TEST rehearsal and eventual production execution separately.
+
+## Later gates (not this task)
+
+- Determine whether a minimal TEST-safe, multi-object, production-equivalent backfill rehearsal is needed; do not bypass PRD stage/bucket guards or use production credentials for TEST.
+- After explicit source/stage/prefix approvals, inventory the Sydney collection read-only; preserve baseline; backfill 100 in bounded batches with new private v2 state, verified derivatives and controlled recovery.
+- Separately implement deterministic `v2` API signing with scope authorization and original fallback; benchmark before/after and expand source buckets. Automatic object-created generation, Photo Viewer and mobile-first work are future phases.

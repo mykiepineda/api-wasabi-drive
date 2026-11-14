@@ -60,8 +60,8 @@ const main = async (
 ) => {
   try {
     const options = parseArguments(args);
-    const config = loadProductionBackfillConfig(env);
-    validateSourceScope(options, config);
+    const config = loadProductionBackfillConfig(env, options.recipeId);
+    validateSourceScope(options, config, options.recipeId);
     const maxObjects = parseBoundedInteger(options.maxObjects, 1, 10, "invalid-max-objects");
     const pageSize = options.pageSize === undefined
       ? 5

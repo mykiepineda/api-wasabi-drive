@@ -178,7 +178,7 @@ const generatedFor = ({ sourceKey, recipeId = "v1", etag = "source-etag" }) => g
 
 test.after(() => fs.rmSync(privateTestRoot, { recursive: true, force: true }));
 
-test("configuration requires dedicated credentials, exact production stage and Tokyo/Singapore regions", () => {
+test("configuration requires dedicated credentials, exact production stage and recipe-specific source regions", () => {
   assert.deepEqual(loadProductionBackfillConfig(configEnv()), config);
   const invalid = [
     { THUMBNAIL_PRD_BACKFILL_STAGE: "test" },
@@ -209,6 +209,31 @@ test("configuration requires dedicated credentials, exact production stage and T
       assert.throws(() => loadProductionBackfillConfig(incomplete));
     }
   }
+});
+
+test("production source region matrix is bound to the selected recipe", () => {
+  const sydneyEnv = configEnv({ THUMBNAIL_PRD_BACKFILL_SOURCE_REGION: "ap-southeast-2" });
+  assert.equal(loadProductionBackfillConfig(configEnv(), "v1").sourceRegion, "ap-northeast-1");
+  assert.equal(loadProductionBackfillConfig(configEnv(), "v2").sourceRegion, "ap-northeast-1");
+  assert.equal(loadProductionBackfillConfig(sydneyEnv, "v2").sourceRegion, "ap-southeast-2");
+  assert.throws(() => loadProductionBackfillConfig(sydneyEnv));
+  assert.throws(() => loadProductionBackfillConfig(sydneyEnv, "v1"));
+  assert.throws(() => loadProductionBackfillConfig(
+    configEnv({ THUMBNAIL_PRD_BACKFILL_SOURCE_REGION: "ap-southeast-1" }),
+    "v2",
+  ));
+  assert.throws(() => loadProductionBackfillConfig(configEnv(), "v3"));
+
+  const sydneyConfig = loadProductionBackfillConfig(sydneyEnv, "v2");
+  assert.doesNotThrow(() => validateSourceScope({
+    ...scope,
+    sourceRegion: "ap-southeast-2",
+    recipeId: "v2",
+  }, sydneyConfig));
+  assert.throws(() => validateSourceScope({
+    ...scope,
+    sourceRegion: "ap-southeast-2",
+  }, sydneyConfig));
 });
 
 test("arguments reject unknown, duplicate, malformed and unpaired execution flags", () => {
@@ -381,6 +406,55 @@ test("explicit v2 selection reaches the existing storage and generator layers in
   assert.equal(storageOptions.recipeId, "v2");
   assert.equal(scanParams.recipeId, "v2");
   assert.equal(scanParams.dryRun, true);
+  assert.equal(JSON.parse(output[0]).category, "dry-run");
+});
+
+test("CLI requires explicit v2 for configured Sydney sources before storage or state access", async () => {
+  const env = configEnv({ THUMBNAIL_PRD_BACKFILL_SOURCE_REGION: "ap-southeast-2" });
+  const sydneyArgs = cliArgs(["--recipe", "v2"]);
+  sydneyArgs[3] = "ap-southeast-2";
+  for (const args of [
+    cliArgs().map((value, index) => index === 3 ? "ap-southeast-2" : value),
+    [...sydneyArgs.slice(0, -2), "--recipe", "v1"],
+  ]) {
+    let storageCreated = false;
+    const output = [];
+    assert.equal(await main(args, {
+      env,
+      write: (line) => output.push(line),
+      createStorage: () => { storageCreated = true; return {}; },
+    }), 1);
+    assert.equal(storageCreated, false);
+    assert.equal(JSON.parse(output[0]).category, "failed");
+  }
+
+  const output = [];
+  let createdScope;
+  const exitCode = await main(sydneyArgs, {
+    env,
+    write: (line) => output.push(line),
+    createStorage: ({ scope: selectedScope, recipeId }) => {
+      createdScope = selectedScope;
+      assert.equal(recipeId, "v2");
+      return {};
+    },
+    runScan: async ({ recipeId, dryRun }) => {
+      assert.equal(recipeId, "v2");
+      assert.equal(dryRun, true);
+      return {
+        category: "dry-run",
+        examined: 0,
+        generated: 0,
+        alreadyPresent: 0,
+        unsupported: 0,
+        oversize: 0,
+        failed: 0,
+      };
+    },
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(createdScope.sourceRegion, "ap-southeast-2");
+  assert.equal(createdScope.destinationRegion, "ap-southeast-1");
   assert.equal(JSON.parse(output[0]).category, "dry-run");
 });
 
@@ -563,6 +637,117 @@ test("region clients and operations are explicit and bound to the configured buc
     region: scope.destinationRegion,
   }));
   assert.equal(commands.length, callsBeforeInvalid);
+});
+
+test("storage construction applies the recipe matrix and uses Sydney source and Singapore destination endpoints", async () => {
+  let clientCreations = 0;
+  for (const [invalidScope, recipeId] of [
+    [{ ...scope, sourceRegion: "ap-southeast-2" }, "v1"],
+    [{ ...scope, sourceRegion: "ap-southeast-1" }, "v2"],
+    [{ ...scope, prefix: "" }, "v2"],
+    [{ ...scope, sourceBucket: "wasabi-test-source" }, "v2"],
+    [{ ...scope, destinationRegion: "ap-northeast-1" }, "v2"],
+    [scope, "v3"],
+  ]) {
+    assert.throws(() => createThumbnailPrdBackfillStorage({
+      scope: invalidScope,
+      recipeId,
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+      createClient: () => { clientCreations += 1; throw new Error("must not create client"); },
+    }));
+  }
+  assert.equal(clientCreations, 0);
+
+  const sydneyScope = { ...scope, sourceRegion: "ap-southeast-2" };
+  const clients = [];
+  const commands = [];
+  const body = Buffer.from("source");
+  const storage = createThumbnailPrdBackfillStorage({
+    scope: sydneyScope,
+    recipeId: "v2",
+    accessKeyId: config.accessKeyId,
+    secretAccessKey: config.secretAccessKey,
+    createClient: (options) => {
+      const client = {
+        options,
+        async send(command) {
+          commands.push(command);
+          if (command instanceof ListObjectsV2Command) return { IsTruncated: false, Contents: [] };
+          if (command instanceof HeadObjectCommand && command.input.Bucket === sydneyScope.sourceBucket) {
+            return { ETag: '"source-etag"', ContentLength: body.length };
+          }
+          if (command instanceof HeadObjectCommand) return { ETag: '"derived-etag"' };
+          if (command instanceof GetObjectCommand) {
+            return {
+              ETag: '"source-etag"',
+              ContentLength: body.length,
+              Body: (async function* stream() { yield body; }()),
+            };
+          }
+          if (command instanceof PutObjectCommand) return { ETag: '"derived-etag"' };
+          throw new Error("unexpected command");
+        },
+      };
+      clients.push(client);
+      return client;
+    },
+  });
+  const sourceKey = `${sydneyScope.prefix}image.jpg`;
+  await storage.listSourcePage({
+    bucket: sydneyScope.sourceBucket,
+    region: sydneyScope.sourceRegion,
+    prefix: sydneyScope.prefix,
+    maxKeys: 1,
+  });
+  await storage.headSource({
+    bucket: sydneyScope.sourceBucket,
+    key: sourceKey,
+    region: sydneyScope.sourceRegion,
+  });
+  await storage.getSourceBuffer({
+    bucket: sydneyScope.sourceBucket,
+    key: sourceKey,
+    region: sydneyScope.sourceRegion,
+    etag: '"source-etag"',
+    size: body.length,
+  });
+  const sydneyKey = createThumbnailKey({
+    sourceRegion: "ap-southeast-2",
+    sourceBucket: scope.sourceBucket,
+    completeSourceKey: sourceKey,
+    normalizedETag: "source-etag",
+    formatVersion: "v2",
+  });
+  const tokyoKey = createThumbnailKey({
+    sourceRegion: "ap-northeast-1",
+    sourceBucket: scope.sourceBucket,
+    completeSourceKey: sourceKey,
+    normalizedETag: "source-etag",
+    formatVersion: "v2",
+  });
+  assert.notEqual(sydneyKey, tokyoKey);
+  await storage.headDerived({
+    bucket: sydneyScope.destinationBucket,
+    key: sydneyKey,
+    region: sydneyScope.destinationRegion,
+  });
+  await storage.putDerived({
+    bucket: sydneyScope.destinationBucket,
+    key: sydneyKey,
+    region: sydneyScope.destinationRegion,
+    body: Buffer.from("webp"),
+  });
+
+  assert.equal(commands.find((command) => command instanceof GetObjectCommand).input.IfMatch, '"source-etag"');
+  assert.equal(commands.find((command) => command instanceof PutObjectCommand).input.IfNoneMatch, "*");
+  assert.deepEqual(clients.map((client) => [
+    client.options.region,
+    client.options.endpoint,
+  ]).sort((left, right) => left[0].localeCompare(right[0])), [
+    ["ap-southeast-1", "https://s3.ap-southeast-1.wasabisys.com"],
+    ["ap-southeast-2", "https://s3.ap-southeast-2.wasabisys.com"],
+  ]);
 });
 
 test("v2 storage approval is fixed to the selected recipe, source identity, and current ETag", async () => {
@@ -1245,6 +1430,109 @@ test("one- and two-object caps stay bounded and report truncation honestly", asy
       maxObjects,
     }));
   }
+});
+
+test("runner rejects Sydney for v1 and resumes approved Sydney v2 state with region-bound identity", async () => {
+  const sydneyScope = { ...scope, sourceRegion: "ap-southeast-2" };
+  let invalidListCalls = 0;
+  for (const invalidScope of [
+    sydneyScope,
+    { ...scope, sourceRegion: "ap-southeast-1" },
+    { ...scope, prefix: "" },
+    { ...scope, sourceBucket: "wasabi-test-source" },
+    { ...scope, destinationRegion: "ap-northeast-1" },
+  ]) {
+    await assert.rejects(runProductionBackfillImpl({
+      scope: invalidScope,
+      storage: {
+        async listSourcePage() {
+          invalidListCalls += 1;
+          return { Contents: [], IsTruncated: false };
+        },
+      },
+      maxObjects: 1,
+      recipeId: invalidScope === sydneyScope ? "v1" : "v2",
+    }));
+  }
+  assert.equal(invalidListCalls, 0);
+
+  const paths = statePaths();
+  const v2Paths = recipeStatePaths({ recipeId: "v2", ...paths });
+  const sourceKey = `${sydneyScope.prefix}first.jpg`;
+  const expectedSydneyKey = createThumbnailKey({
+    sourceRegion: sydneyScope.sourceRegion,
+    sourceBucket: sydneyScope.sourceBucket,
+    completeSourceKey: sourceKey,
+    normalizedETag: "source-etag",
+    formatVersion: "v2",
+  });
+  const expectedDigest = crypto.createHash("sha256").update(JSON.stringify([
+    "v2",
+    sydneyScope.sourceRegion,
+    sydneyScope.sourceBucket,
+    sourceKey,
+    "source-etag",
+  ])).digest("hex");
+  assert.equal(expectedSydneyKey, `v2/${expectedDigest.slice(0, 2)}/${expectedDigest}.webp`);
+  assert.notEqual(expectedSydneyKey, createThumbnailKey({
+    sourceRegion: "ap-northeast-1",
+    sourceBucket: sydneyScope.sourceBucket,
+    completeSourceKey: sourceKey,
+    normalizedETag: "source-etag",
+    formatVersion: "v2",
+  }));
+  assert.notEqual(
+    processingFingerprint(sydneyScope, "v2"),
+    processingFingerprint(scope, "v2"),
+  );
+
+  const firstListing = storageFor([{
+    Contents: [makeItem(sourceKey)],
+    IsTruncated: true,
+  }]);
+  const firstRun = await runProductionBackfill({
+    scope: sydneyScope,
+    storage: firstListing.storage,
+    maxObjects: 1,
+    dryRun: false,
+    recipeId: "v2",
+    ...paths,
+    generate: async ({ recordWriteIntent, recordWriteOutcome }) => {
+      const eventId = recordWriteIntent(expectedSydneyKey);
+      recordWriteOutcome(eventId, expectedSydneyKey, "generated");
+      return generated(expectedSydneyKey);
+    },
+  });
+  assert.equal(firstRun.category, "paused-cap");
+  assert.equal(firstRun.generated, 1);
+  assert.equal(firstListing.calls[0].region, "ap-southeast-2");
+  assert.deepEqual(JSON.parse(fs.readFileSync(v2Paths.checkpointPath, "utf8")), {
+    version: 2,
+    recipeId: "v2",
+    scope: sydneyScope,
+    lastCompletedKey: sourceKey,
+  });
+  const records = fs.readFileSync(v2Paths.auditPath, "utf8")
+    .trim().split("\n").map(JSON.parse);
+  assert.equal(records[0].derivedKey, expectedSydneyKey);
+  assert.equal(records[0].scopeId, processingFingerprint(sydneyScope, "v2"));
+
+  const resumeListing = storageFor([{
+    Contents: [makeItem(`${sydneyScope.prefix}second.jpg`)],
+    IsTruncated: false,
+  }]);
+  const resumed = await runProductionBackfill({
+    scope: sydneyScope,
+    storage: resumeListing.storage,
+    maxObjects: 1,
+    dryRun: false,
+    recipeId: "v2",
+    ...paths,
+    generate: async () => ({ category: "already-present", count: 1 }),
+  });
+  assert.equal(resumed.alreadyPresent, 1);
+  assert.equal(resumeListing.calls[0].region, "ap-southeast-2");
+  assert.equal(resumeListing.calls[0].startAfter, sourceKey);
 });
 
 test("malformed, empty-truncated, out-of-order, duplicate and failed provider pages stop without checkpoint progress", async (t) => {

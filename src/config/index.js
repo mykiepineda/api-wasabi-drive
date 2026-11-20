@@ -98,6 +98,17 @@ const isValidBucketName = (value) =>
   && !value.includes("..")
   && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value);
 
+const isValidThumbnailSourcePrefix = (value) =>
+  typeof value === "string"
+  && value !== "/"
+  && !value.startsWith("/")
+  && !value.includes("*")
+  && !value.includes("?")
+  && value.endsWith("/")
+  && !value.includes("\\")
+  && !value.includes("//")
+  && !value.split("/").some((part) => part === "." || part === "..");
+
 const isValidReleaseSha = (value) => {
   if (typeof value !== "string") {
     return false;
@@ -153,21 +164,22 @@ const parseThumbnailKeys = (value) => {
 
 const parseThumbnailApiConfig = () => {
   const enabled = parseBoolean(process.env.THUMBNAIL_API_ENABLED);
-  if (!enabled) {
+  const v2Enabled = parseBoolean(process.env.THUMBNAIL_API_V2_ENABLED);
+  if (!enabled && !v2Enabled) {
     return {
       enabled: false,
       enabledValue: process.env.THUMBNAIL_API_ENABLED,
       allowedKeys: new Set(),
       allowedKeyList: Object.freeze([]),
+      v2: {
+        enabled: false,
+        enabledValue: process.env.THUMBNAIL_API_V2_ENABLED,
+      },
     };
   }
 
-  const sourceBucket = process.env.THUMBNAIL_API_SOURCE_BUCKET?.trim();
-  const sourceRegion = process.env.THUMBNAIL_API_SOURCE_REGION?.trim();
-  const sourcePrefix = process.env.THUMBNAIL_API_SOURCE_PREFIX?.trim();
   const derivedBucket = process.env.THUMBNAIL_API_DERIVED_BUCKET?.trim();
   const derivedRegion = process.env.THUMBNAIL_API_DERIVED_REGION?.trim();
-  const allowedKeys = parseThumbnailKeys(process.env.THUMBNAIL_API_ALLOWED_KEYS);
   const accessKeyId = process.env.THUMBNAIL_API_READ_ACCESS_KEY_ID?.trim();
   const secretAccessKey = process.env.THUMBNAIL_API_READ_SECRET_ACCESS_KEY?.trim();
   const ttlValue = process.env.THUMBNAIL_API_URL_TTL_SECONDS;
@@ -175,28 +187,12 @@ const parseThumbnailApiConfig = () => {
     ? Number(ttlValue.trim())
     : NaN;
 
-  if (!sourceBucket || !sourceRegion || !sourcePrefix || !derivedBucket || !derivedRegion || !accessKeyId || !secretAccessKey || allowedKeys.length === 0) {
-    throw new Error("THUMBNAIL_API_ENABLED requires all thumbnail API environment variables to be configured.");
+  if (!derivedBucket || !derivedRegion || !accessKeyId || !secretAccessKey) {
+    throw new Error("An enabled thumbnail API mode requires the shared derived bucket, region, and read credentials.");
   }
 
-  if (!isValidBucketName(sourceBucket) || !isValidBucketName(derivedBucket)) {
-    throw new Error("Thumbnail API source and derived buckets must be valid exact bucket names.");
-  }
-  if (
-    sourcePrefix === "/"
-    || sourcePrefix.startsWith("/")
-    || sourcePrefix.includes("*")
-    || sourcePrefix.includes("?")
-    || !sourcePrefix.endsWith("/")
-    || sourcePrefix.includes("\\")
-    || sourcePrefix.includes("//")
-    || sourcePrefix.split("/").some((part) => part === "." || part === "..")
-  ) {
-    throw new Error("THUMBNAIL_API_SOURCE_PREFIX must be a non-empty slash-terminated prefix.");
-  }
-
-  if (!SUPPORTED_WASABI_REGIONS.has(sourceRegion)) {
-    throw new Error(`Unsupported THUMBNAIL_API_SOURCE_REGION value: ${sourceRegion}`);
+  if (!isValidBucketName(derivedBucket)) {
+    throw new Error("Thumbnail API derived bucket must be a valid exact bucket name.");
   }
   if (derivedRegion !== "ap-southeast-1") {
     throw new Error("THUMBNAIL_API_DERIVED_REGION must be ap-southeast-1.");
@@ -204,19 +200,7 @@ const parseThumbnailApiConfig = () => {
 
   const stage = process.env.DEPLOYMENT_STAGE?.trim().toLowerCase();
   if (!["test", "prd"].includes(stage)) {
-    throw new Error("THUMBNAIL_API_ENABLED requires DEPLOYMENT_STAGE to be test or prd.");
-  }
-  if (stage === "prd" && sourceRegion !== "ap-northeast-1") {
-    throw new Error("The prd thumbnail source region must be ap-northeast-1.");
-  }
-  if (stage === "test" && sourceRegion === "ap-northeast-1") {
-    throw new Error("The test thumbnail source region must not use the prd Tokyo region.");
-  }
-  if (sourceRegion === derivedRegion) {
-    throw new Error("The thumbnail source and derived regions must differ.");
-  }
-  if (sourceBucket === derivedBucket) {
-    throw new Error("THUMBNAIL_API_SOURCE_BUCKET and THUMBNAIL_API_DERIVED_BUCKET must differ.");
+    throw new Error("An enabled thumbnail API mode requires DEPLOYMENT_STAGE to be test or prd.");
   }
   if (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 3600) {
     throw new Error("THUMBNAIL_API_URL_TTL_SECONDS must be an integer between 60 and 3600 seconds.");
@@ -224,6 +208,58 @@ const parseThumbnailApiConfig = () => {
 
   if (accessKeyId === process.env.WASABI_ACCESS_KEY_ID?.trim()) {
     throw new Error("Thumbnail API read credentials must be distinct from the original Wasabi identity.");
+  }
+
+  let sourceBucket;
+  let sourceRegion;
+  let sourcePrefix;
+  let allowedKeys = Object.freeze([]);
+  if (enabled) {
+    sourceBucket = process.env.THUMBNAIL_API_SOURCE_BUCKET?.trim();
+    sourceRegion = process.env.THUMBNAIL_API_SOURCE_REGION?.trim();
+    sourcePrefix = process.env.THUMBNAIL_API_SOURCE_PREFIX?.trim();
+    allowedKeys = parseThumbnailKeys(process.env.THUMBNAIL_API_ALLOWED_KEYS);
+
+    if (!sourceBucket || !sourceRegion || !sourcePrefix || allowedKeys.length === 0) {
+      throw new Error("THUMBNAIL_API_ENABLED requires its source scope and exact allowed keys.");
+    }
+    if (!isValidBucketName(sourceBucket) || !SUPPORTED_WASABI_REGIONS.has(sourceRegion)) {
+      throw new Error("Thumbnail API v1 source bucket or region is invalid.");
+    }
+    if (!isValidThumbnailSourcePrefix(sourcePrefix)) {
+      throw new Error("THUMBNAIL_API_SOURCE_PREFIX must be a non-empty slash-terminated prefix.");
+    }
+    if (stage === "prd" && sourceRegion !== "ap-northeast-1") {
+      throw new Error("The prd thumbnail source region must be ap-northeast-1.");
+    }
+    if (stage === "test" && sourceRegion === "ap-northeast-1") {
+      throw new Error("The test thumbnail source region must not use the prd Tokyo region.");
+    }
+    if (sourceRegion === derivedRegion || sourceBucket === derivedBucket) {
+      throw new Error("The thumbnail source and derived bucket and regions must differ.");
+    }
+  }
+
+  let v2SourceBucket;
+  let v2SourceRegion;
+  let v2SourcePrefix;
+  if (v2Enabled) {
+    v2SourceBucket = process.env.THUMBNAIL_API_V2_SOURCE_BUCKET?.trim();
+    v2SourceRegion = process.env.THUMBNAIL_API_V2_SOURCE_REGION?.trim();
+    v2SourcePrefix = process.env.THUMBNAIL_API_V2_SOURCE_PREFIX?.trim();
+
+    if (!v2SourceBucket || !v2SourceRegion || !v2SourcePrefix) {
+      throw new Error("THUMBNAIL_API_V2_ENABLED requires its source bucket, region, and prefix.");
+    }
+    if (!isValidBucketName(v2SourceBucket) || v2SourceRegion !== "ap-southeast-2") {
+      throw new Error("Thumbnail API v2 requires a valid source bucket in ap-southeast-2.");
+    }
+    if (!isValidThumbnailSourcePrefix(v2SourcePrefix)) {
+      throw new Error("THUMBNAIL_API_V2_SOURCE_PREFIX must be a non-empty slash-terminated prefix.");
+    }
+    if (v2SourceRegion === derivedRegion || v2SourceBucket === derivedBucket) {
+      throw new Error("The v2 source and derived bucket and regions must differ.");
+    }
   }
 
   const internalBuckets = parseExactList(
@@ -235,10 +271,21 @@ const parseThumbnailApiConfig = () => {
     throw new Error("WASABI_INTERNAL_BUCKETS must include the configured THUMBNAIL_API_DERIVED_BUCKET.");
   }
 
+  if (
+    enabled
+    && v2Enabled
+    && sourceBucket === v2SourceBucket
+    && sourceRegion === v2SourceRegion
+    && (sourcePrefix.startsWith(v2SourcePrefix) || v2SourcePrefix.startsWith(sourcePrefix))
+  ) {
+    throw new Error("Thumbnail API v1 and v2 source scopes must not overlap.");
+  }
+
   const allowedKeySet = new Set(allowedKeys.map((key) => key.toLowerCase()));
 
   return {
-    enabled: true,
+    enabled,
+    enabledValue: process.env.THUMBNAIL_API_ENABLED,
     sourceBucket,
     sourceRegion,
     sourcePrefix,
@@ -249,6 +296,13 @@ const parseThumbnailApiConfig = () => {
     readAccessKeyId: accessKeyId,
     readSecretAccessKey: secretAccessKey,
     urlTtlSeconds: ttlSeconds,
+    v2: {
+      enabled: v2Enabled,
+      enabledValue: process.env.THUMBNAIL_API_V2_ENABLED,
+      sourceBucket: v2SourceBucket,
+      sourceRegion: v2SourceRegion,
+      sourcePrefix: v2SourcePrefix,
+    },
   };
 };
 

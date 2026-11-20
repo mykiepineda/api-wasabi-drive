@@ -526,7 +526,8 @@ test("v2 signs eligible scoped objects from the current normalized listing ETag 
     { Key: "photos/invalid-etag.jpg", Size: 100, ETag: '"malformed' },
     { Key: "photos/large.jpg", Size: MAX_SOURCE_BYTES + 1, ETag: "etag-large" },
     { Key: "photos/readme.txt", Size: 100, ETag: "etag-text" },
-    { Key: "photos/raw.cr2", Size: 100, ETag: "etag-raw" },
+    { Key: "photos/raw.CR2", Size: 100, ETag: '"etag-cr2"' },
+    { Key: "photos/raw.nef", Size: 100, ETag: "etag-nef" },
     { Key: "photos-other/outside.jpg", Size: 100, ETag: "etag-outside" },
   ];
   const expectedKeys = [
@@ -564,6 +565,13 @@ test("v2 signs eligible scoped objects from the current normalized listing ETag 
       sourceBucket: "sydney-source",
       completeSourceKey: "photos/boundary.jpg",
       normalizedETag: "etag-boundary",
+    }),
+    createThumbnailKey({
+      formatVersion: "v2",
+      sourceRegion: "ap-southeast-2",
+      sourceBucket: "sydney-source",
+      completeSourceKey: "photos/raw.CR2",
+      normalizedETag: "etag-cr2",
     }),
   ];
   const signedKeys = [];
@@ -604,8 +612,11 @@ test("v2 signs eligible scoped objects from the current normalized listing ETag 
   assert.equal(result.Contents[2].ThumbnailAccessUrl, `https://thumbnail.example/${expectedKeys[2]}`);
   assert.equal(result.Contents[3].ThumbnailAccessUrl, `https://thumbnail.example/${expectedKeys[3]}`);
   assert.equal(result.Contents[4].ThumbnailAccessUrl, `https://thumbnail.example/${expectedKeys[4]}`);
+  assert.equal(result.Contents[11].ThumbnailAccessUrl, `https://thumbnail.example/${expectedKeys[5]}`);
   assert.equal(result.Contents.every((object) => object.AccessUrl.startsWith("https://source.example/")), true);
-  assert.equal(result.Contents.slice(5).every((object) => !Object.hasOwn(object, "ThumbnailAccessUrl")), true);
+  assert.equal(result.Contents.slice(5, 11).every((object) => !Object.hasOwn(object, "ThumbnailAccessUrl")), true);
+  assert.equal(Object.hasOwn(result.Contents[12], "ThumbnailAccessUrl"), false);
+  assert.equal(Object.hasOwn(result.Contents[13], "ThumbnailAccessUrl"), false);
   assert.deepEqual(result.CommonPrefixes, [{ Prefix: "photos/nested/" }]);
   assert.equal(result.IsTruncated, true);
   assert.equal(result.NextContinuationToken, "next-page");
@@ -713,4 +724,73 @@ test("v2 signer initialization failure preserves original URLs and emits a sanit
   } finally {
     console.warn = originalWarn;
   }
+});
+
+test("v2 region-resolution failure preserves original URLs and emits a sanitized aggregate log", async () => {
+  configureV2Thumbnail();
+  const originalWarn = console.warn;
+  const records = [];
+  let signerCalls = 0;
+  console.warn = (record) => records.push(String(record));
+  storage.getBucketRegion = async () => {
+    throw new Error("private-etag https://provider.example/private-error");
+  };
+  storage.getListObjects = async () => ({
+    Contents: [{ Key: "photos/private.jpg", Size: 100, ETag: "private-etag" }],
+  });
+  storage.getObjectAccessUrl = async () => "https://source.example/original";
+  installThumbnailSigner({
+    createThumbnailApiWasabiStorage: () => {
+      signerCalls += 1;
+      return { getObjectAccessUrl: async () => "https://thumbnail.example/signed" };
+    },
+  });
+
+  try {
+    const result = await buckets.getListObjects({ Bucket: "sydney-source" });
+
+    assert.equal(result.Contents[0].AccessUrl, "https://source.example/original");
+    assert.equal(Object.hasOwn(result.Contents[0], "ThumbnailAccessUrl"), false);
+    assert.equal(signerCalls, 0);
+    assert.equal(records.length, 1);
+    assert.deepEqual(JSON.parse(records[0]), {
+      level: "warn",
+      operation: "thumbnailSigning",
+      errorCategory: "region_resolution",
+      count: 1,
+    });
+    assert.equal(records.join("").includes("private-etag"), false);
+    assert.equal(records.join("").includes("private-error"), false);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test("empty v2 listings do not resolve a region or initialize the thumbnail signer", async () => {
+  configureV2Thumbnail();
+  let regionCalls = 0;
+  let signerCalls = 0;
+  storage.getBucketRegion = async () => {
+    regionCalls += 1;
+    return { region: "ap-southeast-2" };
+  };
+  storage.getListObjects = async () => ({
+    Contents: [],
+    IsTruncated: false,
+    KeyCount: 0,
+  });
+  installThumbnailSigner({
+    createThumbnailApiWasabiStorage: () => {
+      signerCalls += 1;
+      return { getObjectAccessUrl: async () => "https://thumbnail.example/signed" };
+    },
+  });
+
+  assert.deepEqual(await buckets.getListObjects({ Bucket: "sydney-source" }), {
+    Contents: [],
+    IsTruncated: false,
+    KeyCount: 0,
+  });
+  assert.equal(regionCalls, 0);
+  assert.equal(signerCalls, 0);
 });

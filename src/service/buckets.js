@@ -60,7 +60,7 @@ const getV2ThumbnailCandidateKey = (object, bucketName, bucketRegion, thumbnailC
     bucket: bucketName,
     etag: object.ETag,
   });
-  if (!eligibility.eligible || eligibility.category !== "standard-image") {
+  if (!eligibility.eligible) {
     return undefined;
   }
 

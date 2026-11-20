@@ -1,44 +1,35 @@
-# Wasabi Drive backend — GitHub Copilot instructions (Phase 8D-C2b)
+# Copy-ready GitHub Copilot task — Wasabi Drive Phase 8D-C3
 
-**Active task: add Sydney (`ap-southeast-2`) as an explicitly supported PRD source region for the immutable C1/`v2` thumbnail backfill. This is a LOCAL CODE-ONLY task. Do not touch Wasabi, AWS, Docker state, or deployed services.**
+You are implementing **Phase 8D-C3: deterministic v2 thumbnail URL signing** on a focused task branch from the latest backend `master`. The owner makes architectural decisions. **Do not commit, push, merge, deploy, contact Wasabi/AWS, change GitHub Environment settings, use production credentials, run backfill/pilot/inventory/preflight/integration commands, or touch any state/backup/audit files.** Work only with synthetic/mocked tests and leave modifications for review.
 
-## Ownership and authoritative context
+## Inspect first
 
-- The owner remains the technical/architecture decision-maker. GitHub Copilot implements focused tasks; the owner and ChatGPT review before committing, merging, granting permissions, or performing any storage operation.
-- The owner reports Phase 8D-C1 (`v2` recipe), C2 (recipe-aware PRD backfill), and C2a (`v2` single-object TEST pilot) merged. TEST site remains healthy; a Sydney TEST object produced a 200 x 190 WebP, 4,980 bytes, and the owner visually verified it in the TEST-derived bucket. This verifies single-object generation/write only, NOT multi-object checkpoint/restart/recovery behavior.
-- The next approximately 100-photo collection is in Sydney (`ap-southeast-2`); its stage, exact bucket, folder prefix, and permitted operations have not been stated here. NEVER assume it is a TEST or PRD source.
-- The approved immutable C1 recipe is **`v2`: centre-cropped 200 x 190 WebP at quality 80, orientation-safe, without enlarging small images**. Existing `v1` remains immutable at 512 maximum edge/quality 80.
-- The eventual browsing design is server-derived deterministic `v2` keys and temporary read-only thumbnail URLs, with no per-file whitelist, no per-object `HEAD` during normal browsing, and the existing one-time frontend fallback to the original. This is OUT OF SCOPE for C2b.
-- Read the current checkout and live repository files as authoritative. Previously supplied reviewed snapshots may be older than the owner's current `master`. Do not assume the merge SHA.
+1. Show `git branch --show-current`, `git rev-parse HEAD`, `git status --short`, `node --version`; read `AGENTS.md` and `.github/copilot-instructions.md`. If on `master`, create `feature/thumbnail-v2-deterministic-signing` from up-to-date clean `master`; don't discard existing changes. If branch is not clean, stop and report.
+2. Read `src/thumbnail/key.js`, `src/thumbnail/eligibility.js`, `src/service/buckets.js`, `src/storage/thumbnail-api-wasabi.js`, `src/config/index.js`, `src/app.js`, `serverless.yml`, both deployment workflows, `.env.example`, `README.md`, `test/buckets.service.test.js`, `test/thumbnail-api-wasabi.test.js`, `test/config.thumbnail-api.test.js` and applicable auth/security tests.
+3. Summarize present v1 behavior and propose a minimal change plan before editing.
 
-## Hard constraints
+## Implement
 
-- Before edits inspect `git branch --show-current`, `git rev-parse HEAD`, `git status --short`, `AGENTS.md`, `.github/copilot-instructions.md`, source and tests. Do not commit on `master`, reset/stash user changes, or access untracked `.env.local` or other private files.
-- DO NOT make live calls to Wasabi/AWS, request new permissions, run pilot/backfill/preflight/integration commands, build/run Docker with credentials or state, touch private checkpoint/audit/backup volumes, commit, push, merge, deploy, or change deployment workflows. Use synthetic fixtures and mocked providers only.
-- Preserve Node.js 24, CommonJS, Express/route-service-storage separation, Serverless Framework, private source/derived objects, Entra authentication/authorization, internal-bucket hiding, dedicated credentials, stage isolation, and unchanged frontend/API contracts.
-- Preserve **v1 Tokyo-only** PRD source (`ap-northeast-1`) without changing its existing runtime output, key identity, state schema, checkpoint/audit files, default recipe or processing controls.
-- For **explicit `v2` only**, permit either Tokyo (`ap-northeast-1`) or Sydney (`ap-southeast-2`) PRD source. Destination remains pinned to private Singapore (`ap-southeast-1`) and must differ from source bucket. Do not generalize to all `SUPPORTED_WASABI_REGIONS` or enable PRD writes against TEST bucket names.
-- Do not relax current required nonempty, slash-terminated source prefix, exact configured bucket/region/prefix matching, 10-examined-object cap, page-size limits, conditional `IfMatch` source GET and `IfNoneMatch: "*"` derived PUT, audit intent/outcome durability, fail-closed uncertain writes, lock path, or recipe-specific checkpoint/audit identity. State paths remain private and outside Git.
-- Keep a single effective writer lock for the same mounted state HOME; separate volumes/machines do NOT share this lock. Do not create per-region or per-recipe lock paths.
-- Do not alter the existing single-object TEST pilot, legacy bulk TEST driver, C1 image generation, CR2 processing, API signer, config of thumbnail serving, Serverless/GitHub Actions, dependencies, or frontend. No database, manifest, queue, or new cloud service.
+**Approved behavior:** Existing v1 thumbnail URLs for up to 13 exact allowlisted Tokyo derivatives continue unchanged. New v2 thumbnail URL signing is separately enabled for one exact Sydney source bucket and prefix in each stage. For each source object already returned by authorized `/buckets` listing, calculate a deterministic `v2` key from its **current listing ETag**, source region, bucket, full key and version; sign it using the fixed dedicated Singapore derived-read identity; return `ThumbnailAccessUrl`. No per-file v2 allowlist, coverage manifest, HEAD/existence check or new endpoint. Preserve original `AccessUrl` and frontend fallback. Do not broaden user or storage authorization.
 
-## Focused C2b code task
+**Config:** Add a default-off `THUMBNAIL_API_V2_ENABLED` plus source bucket, source region and slash-terminated prefix. Reuse existing **stage-specific** derived-bucket/region, explicit dedicated read credential pair and TTL if compatible; validate them when either mode is enabled, with derived bucket in `WASABI_INTERNAL_BUCKETS`. Keep `THUMBNAIL_API_ENABLED`, v1 source/prefix, v1 13-key allowlist and the Tokyo-only production guard intact. V2 stage is explicit; current source region may be only `ap-southeast-2` for this initial rollout. Fail closed on invalid booleans, scope, credentials, identity reuse, prefix, stage, derived region or overlapping v1/v2 scopes. If the actual configuration needs separate destination credentials, **stop and raise the trade-off** rather than silently changing security design.
 
-1. Inspect `src/thumbnail/production-backfill.js` (including `loadProductionBackfillConfig`, `runProductionBackfill`, `parseArguments`, fingerprint/checkpoint/audit/lock logic), `src/storage/thumbnail-prd-backfill-wasabi.js`, `scripts/thumbnail-backfill-prd.js`, and `test/thumbnail-production-backfill.test.js`.
-2. Bind source-region acceptance to the **validated recipe ID**, consistently in configuration loading, runner validation, and storage-adapter construction: `v1` only Tokyo; `v2` Tokyo or Sydney. Preserve all other production safety checks. An omitted recipe must continue to resolve to `v1`, so omitting `--recipe` with Sydney must FAIL CLOSED.
-3. Prefer a minimal shared pure validation helper if it genuinely prevents policy drift, but do not refactor unrelated code. Unknown recipes, stage/bucket mismatches, arbitrary regions, destination-region changes and root/empty prefixes must continue to fail before any storage operation.
-4. Preserve the identity payload exactly: `[formatVersion, sourceRegion, sourceBucket, completeSourceKey, normalizedETag]`. Do not trim keys, rehash by destination region, or modify the hash algorithm. `v2` Sydney and `v2` Tokyo must use distinct identities for the same other inputs.
-5. Add focused synthetic tests proving the region/recipe matrix at all entrypoints; validations reject before client/network work or state writes; correct Sydney S3 endpoint is used for approved source operations, Singapore for derived; bounded dry-run is read-only; conditional operations, resume identity, audit/lock and all v1 regressions survive. Test more than one object/pagination and interruption/resume with injected mocks if available within the existing suite.
-6. Make only narrowly necessary README/instruction changes. Clearly label any command as syntax-only and NOT authorized to run. Do not print private source identifiers or credentials.
+**Service:** Candidate selection on `getListObjects` only. Check selected bucket, `getBucketRegion()` resolved region, exact prefix match on each returned object and shared `evaluateThumbnailEligibility()`, plus the existing `MAX_SOURCE_BYTES` (25 MiB) limit for v2 candidates only. Use `createThumbnailKey({ formatVersion: "v2", sourceRegion, sourceBucket, completeSourceKey, normalizedETag })`. V1 still requires legacy allowedKeys. Preserve bucket filtering, authorization middleware, pagination, original URLs and sanitized error aggregation. Handle one region lookup per applicable listing page, not per object. Do not make `HeadObject` requests.
 
-## Validation and stop gate
+**Signer:** Existing factory only signs v1 keys; permit canonical lowercase `v2/xx/<64hex>.webp` keys while continuing to permit v1. Ensure shard equals first two digest characters. Reject v3, uppercase, malformed, traversal, caller-chosen buckets, unknown keys. Sign with GetObjectCommand and the configured dedicated read identity only; no network check of existence.
 
-- Use locked dependencies under Node.js 24: `node --version`, `npm test`, `git diff --check`, `git status --short`; report actual totals, skips, failures, and changed files. No live network/cloud operations.
-- Report where all recipe/region guards are enforced and whether current TEST tooling genuinely exercises the production checkpoint/audit path (it currently does not). Distinguish a mocked test from a live multi-object TEST rehearsal.
-- Stop. Leave changes uncommitted for independent review. The owner will authorize any PR/merge, TEST rehearsal and eventual production execution separately.
+**Workflows/docs:** Wire `THUMBNAIL_API_V2_*` through Serverless, test and PRD GitHub Actions, `.env.example`, README. Keep flags default-off, source identifiers in protected configuration, secrets externalized, no arbitrary v2 key lists. Document opt-in and rollback by disabling the v2 flag **and redeploying**, with v1 untouched. Do not enable the flag in any environment as part of implementation.
 
-## Later gates (not this task)
+## Required synthetic tests
 
-- Determine whether a minimal TEST-safe, multi-object, production-equivalent backfill rehearsal is needed; do not bypass PRD stage/bucket guards or use production credentials for TEST.
-- After explicit source/stage/prefix approvals, inventory the Sydney collection read-only; preserve baseline; backfill 100 in bounded batches with new private v2 state, verified derivatives and controlled recovery.
-- Separately implement deterministic `v2` API signing with scope authorization and original fallback; benchmark before/after and expand source buckets. Automatic object-created generation, Photo Viewer and mobile-first work are future phases.
+- V1 existing 13-key allowlist, sign URL and Tokyo production guard remain unchanged; errors still sanitized.
+- V2 disabled by default, enabled with complete safe stage configuration independent of v1 enabled state; invalid/overlapping scope fails before storage operations.
+- Exact source bucket/region/prefix + eligible JPG/PNG/WebP and ETag produce expected v2 URL; changed ETag generates a different key; wrong source or noneligible or known-oversize object does not.
+- Canonical signer allows only v1/v2 matching shards, uses fixed derived bucket/region read credentials, never HeadObject, never arbitrary bucket/key.
+- Original `AccessUrl`, pagination, `CommonPrefixes`, internal derived-bucket hiding and auth/trusted-user enforcement remain unchanged.
+- Signer initialization or signing failure gracefully omits only thumbnail URL; logs no secrets, signed URL, private key or ETag.
+- No Sharp/backfill dependencies pulled into the Express/Lambda module graph. CI and Serverless v2 settings are wired correctly and default false.
+
+## Validate and hand off
+
+Run `npm test` with Node.js 24 and locked dependencies, plus `git diff --check`, `git status --short`, syntax checks for changed `.js` files. Report actual test totals, failures/skips, changed files, default feature behavior, unresolved decisions and production/TEST configuration still needed. **Stop without committing or deploying.**

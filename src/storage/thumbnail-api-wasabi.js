@@ -51,8 +51,8 @@ const createThumbnailApiWasabiStorage = ({
       if (
         typeof Key !== "string"
         || Key !== Key.toLowerCase()
-        || !/^v1\/([0-9a-f]{2})\/([0-9a-f]{64})\.webp$/i.test(Key)
-        || Key.split("/")[1].toLowerCase() !== Key.split("/")[2].slice(0, 2).toLowerCase()
+        || !/^v[12]\/([0-9a-f]{2})\/([0-9a-f]{64})\.webp$/.test(Key)
+        || Key.split("/")[1] !== Key.split("/")[2].slice(0, 2)
       ) {
         throw new ThumbnailApiWasabiError("Thumbnail API object key is invalid.");
       }

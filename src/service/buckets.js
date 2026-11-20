@@ -2,7 +2,8 @@ const wasabi = require("../storage/wasabi");
 const config = require("../config");
 const { NotFoundError } = require("../errors");
 const { evaluateThumbnailEligibility } = require("../thumbnail/eligibility");
-const { createThumbnailKey } = require("../thumbnail/key");
+const { MAX_SOURCE_BYTES } = require("../thumbnail/policy");
+const { createThumbnailKey, normalizeEtag } = require("../thumbnail/key");
 const { createThumbnailApiWasabiStorage } = require("../storage/thumbnail-api-wasabi");
 
 const getInternalBucketSet = () => config.wasabi.internalBucketSet;
@@ -37,6 +38,44 @@ const getThumbnailCandidateKey = (object, bucketName, bucketRegion, thumbnailCon
     etag: object.ETag,
   });
   return thumbnailConfig.allowedKeys.has(candidateKey) ? candidateKey : undefined;
+};
+
+const getV2ThumbnailCandidateKey = (object, bucketName, bucketRegion, thumbnailConfig) => {
+  if (
+    bucketName !== thumbnailConfig.sourceBucket
+    || bucketRegion !== thumbnailConfig.sourceRegion
+    || typeof object?.Key !== "string"
+    || !object.Key.startsWith(thumbnailConfig.sourcePrefix)
+    || object.Key.endsWith("/")
+    || object.Size > MAX_SOURCE_BYTES
+  ) {
+    return undefined;
+  }
+
+  const eligibility = evaluateThumbnailEligibility({
+    size: object.Size,
+    extension: object.Key.split("/").at(-1)?.split(".").at(-1),
+    sourceKey: object.Key,
+    region: bucketRegion,
+    bucket: bucketName,
+    etag: object.ETag,
+  });
+  if (!eligibility.eligible || eligibility.category !== "standard-image") {
+    return undefined;
+  }
+
+  const normalizedETag = normalizeEtag(object.ETag);
+  if (!normalizedETag) {
+    return undefined;
+  }
+
+  return createThumbnailKey({
+    formatVersion: "v2",
+    sourceRegion: bucketRegion,
+    sourceBucket: bucketName,
+    completeSourceKey: object.Key,
+    normalizedETag,
+  });
 };
 
 const logThumbnailFailure = (errorCategory, count) => {
@@ -80,8 +119,12 @@ const getListObjects = async (params) => {
   }
 
   const thumbnailConfig = config.thumbnailApi;
-  const isThumbnailSourceBucket = thumbnailConfig.enabled
+  const v2Config = thumbnailConfig.v2 || { enabled: false };
+  const isV1SourceBucket = thumbnailConfig.enabled
     && params.Bucket === thumbnailConfig.sourceBucket;
+  const isV2SourceBucket = v2Config.enabled
+    && params.Bucket === v2Config.sourceBucket;
+  const isThumbnailSourceBucket = isV1SourceBucket || isV2SourceBucket;
   let sourceRegion;
   let regionLookupFailed = false;
 
@@ -94,14 +137,20 @@ const getListObjects = async (params) => {
   }
 
   const objects = ListObjects.Contents;
-  const candidateKeys = isThumbnailSourceBucket && sourceRegion === thumbnailConfig.sourceRegion
-    ? objects.map((object) => getThumbnailCandidateKey(
-      object,
-      params.Bucket,
-      sourceRegion,
-      thumbnailConfig,
-    ))
-    : objects.map(() => undefined);
+  const candidateKeys = objects.map((object) => {
+    if (isV1SourceBucket && sourceRegion === thumbnailConfig.sourceRegion) {
+      const v1Key = getThumbnailCandidateKey(object, params.Bucket, sourceRegion, thumbnailConfig);
+      if (v1Key) {
+        return v1Key;
+      }
+    }
+
+    if (isV2SourceBucket && sourceRegion === v2Config.sourceRegion) {
+      return getV2ThumbnailCandidateKey(object, params.Bucket, sourceRegion, v2Config);
+    }
+
+    return undefined;
+  });
   const candidateCount = candidateKeys.filter(Boolean).length;
   let signer;
   let signerInitializationFailed = false;

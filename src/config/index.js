@@ -2,6 +2,7 @@ const { SUPPORTED_WASABI_REGIONS } = require("../storage/wasabi-regions");
 const { parseSourceEnrollmentJson } = require("../thumbnail/source-enrollment");
 
 const ABSENT_V2_SOURCE_ENROLLMENT = "__WASABI_DRIVE_NO_V2_SOURCE_ENROLLMENT__";
+const ABSENT_V2_EXCLUDED_BUCKETS = "__WASABI_DRIVE_NO_V2_EXCLUDED_BUCKETS__";
 
 const isValidTrustedUserObjectId = (value) => {
   if (typeof value !== "string") {
@@ -251,23 +252,38 @@ const parseThumbnailApiConfig = () => {
     const rawEnrollmentJson = process.env.THUMBNAIL_API_V2_SOURCE_BUCKETS_JSON;
     if (rawEnrollmentJson !== undefined && rawEnrollmentJson !== ABSENT_V2_SOURCE_ENROLLMENT) {
       let excludedBuckets = [];
-      if (process.env.THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON !== undefined
-        && String(process.env.THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON).trim() !== "") {
+      const rawExcludedBucketsJson = process.env.THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON;
+      const exclusionsOmitted = rawExcludedBucketsJson === undefined
+        || rawExcludedBucketsJson === ABSENT_V2_EXCLUDED_BUCKETS;
+
+      if (stage === "prd" && (exclusionsOmitted || String(rawExcludedBucketsJson).trim() === "")) {
+        throw new Error("PRD opt-in v2 enrollment requires an explicit THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON array.");
+      }
+
+      if (!exclusionsOmitted) {
         try {
-          excludedBuckets = JSON.parse(process.env.THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON);
+          excludedBuckets = JSON.parse(rawExcludedBucketsJson);
         } catch {
           throw new Error("THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON contains malformed JSON.");
         }
         if (!Array.isArray(excludedBuckets) || excludedBuckets.some((bucket) => !isValidBucketName(bucket))) {
           throw new Error("THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON must be an array of exact bucket names.");
         }
+        if (new Set(excludedBuckets).size !== excludedBuckets.length) {
+          throw new Error("THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON contains duplicate bucket names.");
+        }
       }
 
+      const internalBucketList = parseExactList(
+        "WASABI_INTERNAL_BUCKETS",
+        process.env.WASABI_INTERNAL_BUCKETS,
+        isValidBucketName,
+      );
       v2SourceEnrollments = parseSourceEnrollmentJson(rawEnrollmentJson, {
         stage,
         derivedBucket,
         derivedRegion,
-        internalBuckets: parseCommaSeparatedValues(process.env.WASABI_INTERNAL_BUCKETS),
+        internalBuckets: internalBucketList,
         excludedBuckets,
       });
 

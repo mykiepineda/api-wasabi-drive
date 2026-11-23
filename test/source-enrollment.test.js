@@ -80,3 +80,32 @@ test("malformed, empty and stage-mismatched JSON enrollment fails closed", () =>
   ), /stage test or prd/);
 });
 
+test("malformed supplied internal and excluded bucket lists fail closed", () => {
+  for (const malformed of [null, "synthetic-bucket", {}, 123]) {
+    assert.throws(() => validateSourceEnrollment([
+      { bucket: "synthetic-photos", region: "ap-southeast-2" },
+    ], { ...baseOptions, internalBuckets: malformed }), /array or Set/);
+    assert.throws(() => validateSourceEnrollment([
+      { bucket: "synthetic-photos", region: "ap-southeast-2" },
+    ], { ...baseOptions, excludedBuckets: malformed }), /array or Set/);
+  }
+
+  assert.throws(() => validateSourceEnrollment([
+    { bucket: "synthetic-photos", region: "ap-southeast-2" },
+  ], { ...baseOptions, excludedBuckets: ["BAD_NAME"] }), /invalid exact bucket name/);
+  assert.throws(() => validateSourceEnrollment([
+    { bucket: "synthetic-photos", region: "ap-southeast-2" },
+  ], { ...baseOptions, excludedBuckets: ["synthetic-ops", "synthetic-ops"] }), /duplicate bucket name/);
+
+  const setEnrollment = validateSourceEnrollment([
+    { bucket: "synthetic-photos", region: "ap-southeast-2" },
+  ], {
+    ...baseOptions,
+    internalBuckets: new Set(["internal-one"]),
+    excludedBuckets: new Set(["synthetic-protected"]),
+  });
+  assert.equal(isSourceEnrolled(setEnrollment, "synthetic-photos", "ap-southeast-2"), true);
+  assert.throws(() => validateSourceEnrollment([
+    { bucket: "synthetic-photos", region: "ap-southeast-2" },
+  ], null), /options must be an object/);
+});

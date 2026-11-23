@@ -8,7 +8,32 @@ const isValidBucketName = (value) =>
   && !value.includes("..")
   && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value);
 
+const validateBucketList = (value, name) => {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value) && !(value instanceof Set)) {
+    throw new Error(`${name} must be supplied as an array or Set.`);
+  }
+
+  const buckets = Array.from(value);
+  const seen = new Set();
+  for (const bucket of buckets) {
+    if (!isValidBucketName(bucket)) {
+      throw new Error(`${name} contains an invalid exact bucket name.`);
+    }
+    if (seen.has(bucket)) {
+      throw new Error(`${name} contains a duplicate bucket name.`);
+    }
+    seen.add(bucket);
+  }
+  return buckets;
+};
+
 const validateSourceEnrollment = (entries, options = {}) => {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new Error("Source enrollment options must be an object.");
+  }
   const stage = typeof options.stage === "string" ? options.stage.trim().toLowerCase() : "";
   if (!["test", "prd"].includes(stage)) {
     throw new Error("Source enrollment requires stage test or prd.");
@@ -31,16 +56,12 @@ const validateSourceEnrollment = (entries, options = {}) => {
   }
 
   const internalBuckets = new Set(
-    Array.isArray(options.internalBuckets)
-      ? options.internalBuckets.filter((bucket) => typeof bucket === "string").map((bucket) => bucket.trim())
-      : [],
+    validateBucketList(options.internalBuckets, "Source enrollment internalBuckets"),
   );
   internalBuckets.add(derivedBucket);
 
   const excludedBuckets = new Set(
-    Array.isArray(options.excludedBuckets)
-      ? options.excludedBuckets.filter((bucket) => typeof bucket === "string").map((bucket) => bucket.trim())
-      : [],
+    validateBucketList(options.excludedBuckets, "Source enrollment excludedBuckets"),
   );
 
   const entriesByBucket = new Map();
@@ -120,6 +141,7 @@ const isSourceEnrolled = (enrollment, bucket, region) =>
 
 module.exports = {
   isValidBucketName,
+  validateBucketList,
   validateSourceEnrollment,
   parseSourceEnrollmentJson,
   isSourceEnrolled,

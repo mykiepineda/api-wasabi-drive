@@ -905,3 +905,121 @@ test("v1 exact candidate retains precedence and v2 signs other eligible objects 
   assert.equal(result.Contents[0].AccessUrl, `https://source.example/${sourceKey}`);
   assert.equal(result.Contents[1].AccessUrl, "https://source.example/other/deep.jpg");
 });
+
+test("JSON opt-in rejects wrong resolved regions and signs second-region and same-region distinct-bucket sources", async () => {
+  const enrollment = validateSourceEnrollment([
+    { bucket: "multi-source", region: "ap-southeast-2" },
+    { bucket: "second-source", region: "us-east-1" },
+    { bucket: "same-region-source", region: "ap-southeast-1" },
+  ], {
+    stage: "test",
+    derivedBucket: "derived-bucket",
+    derivedRegion: "ap-southeast-1",
+    internalBuckets: ["internal-derived"],
+  });
+  configureV2Thumbnail({ sourceEnrollments: enrollment });
+
+  let regionCalls = 0;
+  const signedKeys = [];
+  storage.getBucketRegion = async () => {
+    regionCalls += 1;
+    return { region: "us-east-1" };
+  };
+  storage.getListObjects = async () => ({
+    Contents: [{ Key: "deep/photo.jpg", Size: 100, ETag: "listed-etag" }],
+  });
+  storage.getObjectAccessUrl = async ({ Key }) => `https://source.example/${Key}`;
+  installThumbnailSigner({
+    createThumbnailApiWasabiStorage: () => ({
+      getObjectAccessUrl: async ({ Key }) => {
+        signedKeys.push(Key);
+        return `https://thumbnail.example/${Key}`;
+      },
+    }),
+  });
+
+  const wrongRegion = await buckets.getListObjects({ Bucket: "multi-source" });
+  assert.equal(Object.hasOwn(wrongRegion.Contents[0], "ThumbnailAccessUrl"), false);
+  assert.equal(wrongRegion.Contents[0].AccessUrl, "https://source.example/deep/photo.jpg");
+  assert.equal(regionCalls, 1);
+  assert.equal(signedKeys.length, 0);
+
+  const secondRegion = await buckets.getListObjects({ Bucket: "second-source" });
+  assert.equal(Object.hasOwn(secondRegion.Contents[0], "ThumbnailAccessUrl"), true);
+  assert.equal(secondRegion.Contents[0].AccessUrl, "https://source.example/deep/photo.jpg");
+  assert.equal(regionCalls, 2);
+  assert.equal(signedKeys.length, 1);
+
+  storage.getBucketRegion = async () => {
+    regionCalls += 1;
+    return { region: "ap-southeast-1" };
+  };
+  const sameRegionDistinctBucket = await buckets.getListObjects({ Bucket: "same-region-source" });
+  assert.equal(Object.hasOwn(sameRegionDistinctBucket.Contents[0], "ThumbnailAccessUrl"), true);
+  assert.equal(sameRegionDistinctBucket.Contents[0].AccessUrl, "https://source.example/deep/photo.jpg");
+  assert.equal(regionCalls, 3);
+});
+
+test("Tokyo PRD v1 pilot keys win over v2 and other eligible keys may get v2 URLs", async () => {
+  const sourceRegion = "ap-northeast-1";
+  const pilotKey = "photos/prd-pilot.jpg";
+  const v1Key = createThumbnailKey({
+    sourceRegion,
+    sourceBucket: "prd-source",
+    sourceKey: pilotKey,
+    etag: "pilot-etag",
+  });
+  const enrollment = validateSourceEnrollment([
+    { bucket: "prd-source", region: sourceRegion },
+  ], {
+    stage: "prd",
+    derivedBucket: "derived-bucket",
+    derivedRegion: "ap-southeast-1",
+    internalBuckets: ["internal-derived"],
+  });
+  installConfig({
+    wasabi: { internalBucketSet: new Set(["internal-derived"]), internalBuckets: ["internal-derived"] },
+    thumbnailApi: {
+      enabled: true,
+      sourceBucket: "prd-source",
+      sourceRegion,
+      sourcePrefix: "photos/",
+      allowedKeys: new Set([v1Key]),
+      derivedBucket: "derived-bucket",
+      derivedRegion: "ap-southeast-1",
+      readAccessKeyId: "synthetic-read-access",
+      readSecretAccessKey: "synthetic-read-secret",
+      urlTtlSeconds: 3600,
+      v2: { enabled: true, sourceEnrollments: enrollment },
+    },
+  });
+  const signedKeys = [];
+  let regionCalls = 0;
+  storage.getBucketRegion = async () => {
+    regionCalls += 1;
+    return { region: sourceRegion };
+  };
+  storage.getListObjects = async () => ({
+    Contents: [
+      { Key: pilotKey, Size: 100, ETag: "pilot-etag" },
+      { Key: "deep/non-pilot.jpg", Size: 100, ETag: "non-pilot-etag" },
+    ],
+  });
+  storage.getObjectAccessUrl = async ({ Key }) => `https://source.example/${Key}`;
+  installThumbnailSigner({
+    createThumbnailApiWasabiStorage: () => ({
+      getObjectAccessUrl: async ({ Key }) => {
+        signedKeys.push(Key);
+        return `https://thumbnail.example/${Key}`;
+      },
+    }),
+  });
+
+  const result = await buckets.getListObjects({ Bucket: "prd-source", Prefix: "photos/" });
+  assert.equal(regionCalls, 1);
+  assert.equal(signedKeys[0], v1Key);
+  assert.equal(signedKeys.length, 2);
+  assert.equal(signedKeys[1].startsWith("v2/"), true);
+  assert.equal(result.Contents[0].AccessUrl, `https://source.example/${pilotKey}`);
+  assert.equal(result.Contents[1].AccessUrl, "https://source.example/deep/non-pilot.jpg");
+});

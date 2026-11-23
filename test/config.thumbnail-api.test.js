@@ -256,3 +256,38 @@ test("explicit v2 JSON enrollment fails closed for malformed, empty, duplicate, 
     assertConfigRejects(enabledV2Environment(invalid));
   }
 });
+
+test("PRD opt-in v2 requires an explicit exclusions array and TEST may omit it", () => {
+  const prdBase = enabledV2Environment({
+    DEPLOYMENT_STAGE: "prd",
+    THUMBNAIL_API_V2_SOURCE_BUCKETS_JSON: JSON.stringify([
+      { bucket: "synthetic-sydney-source", region: "ap-southeast-2" },
+    ]),
+  });
+
+  assertConfigRejects(prdBase);
+  assertConfigRejects(enabledV2Environment({
+    ...prdBase,
+    THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON: "",
+  }));
+  assertConfigRejects(enabledV2Environment({
+    ...prdBase,
+    THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON: "{bad",
+  }));
+  assert.equal(loadConfig(enabledV2Environment({
+    ...prdBase,
+    THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON: "[]",
+  })).status, 0);
+
+  assert.equal(loadConfig(enabledV2Environment({
+    THUMBNAIL_API_V2_SOURCE_BUCKETS_JSON: JSON.stringify([
+      { bucket: "synthetic-sydney-source", region: "ap-southeast-2" },
+    ]),
+  })).status, 0);
+  assertConfigRejects(enabledV2Environment({
+    THUMBNAIL_API_V2_SOURCE_BUCKETS_JSON: JSON.stringify([
+      { bucket: "synthetic-sydney-source", region: "ap-southeast-2" },
+    ]),
+    THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON: "{bad",
+  }));
+});

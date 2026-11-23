@@ -7,6 +7,7 @@ const thumbnailSignerPath = require.resolve("../src/storage/thumbnail-api-wasabi
 const servicePath = require.resolve("../src/service/buckets");
 const { createThumbnailKey } = require("../src/thumbnail/key");
 const { MAX_SOURCE_BYTES } = require("../src/thumbnail/policy");
+const { validateSourceEnrollment } = require("../src/thumbnail/source-enrollment");
 const originalStorageModule = require.cache[storagePath];
 const originalConfigModule = require.cache[configPath];
 const originalThumbnailSignerModule = require.cache[thumbnailSignerPath];
@@ -84,6 +85,7 @@ const configureV2Thumbnail = ({
   sourceBucket = "sydney-source",
   sourceRegion = "ap-southeast-2",
   sourcePrefix = "photos/",
+  sourceEnrollments,
 } = {}) => {
   installConfig({
     wasabi: { internalBucketSet: new Set(["internal-derived"]), internalBuckets: ["internal-derived"] },
@@ -100,6 +102,7 @@ const configureV2Thumbnail = ({
         sourceBucket,
         sourceRegion,
         sourcePrefix,
+        sourceEnrollments,
       },
     },
   });
@@ -793,4 +796,112 @@ test("empty v2 listings do not resolve a region or initialize the thumbnail sign
   });
   assert.equal(regionCalls, 0);
   assert.equal(signerCalls, 0);
+});
+
+test("bucket opt-in covers root and nested keys across enrolled buckets and no other bucket", async () => {
+  const enrollment = validateSourceEnrollment([
+    { bucket: "multi-source", region: "ap-southeast-2" },
+    { bucket: "second-source", region: "us-east-1" },
+  ], {
+    stage: "test",
+    derivedBucket: "derived-bucket",
+    derivedRegion: "ap-southeast-1",
+    internalBuckets: ["internal-derived"],
+  });
+  configureV2Thumbnail({
+    sourceEnrollments: enrollment,
+  });
+  const contents = [
+    { Key: "root.jpg", Size: 100, ETag: "root-etag" },
+    { Key: "deep/photos/nested.png", Size: 200, ETag: "nested-etag" },
+  ];
+  const signedKeys = [];
+  let regionCalls = 0;
+  storage.getBucketRegion = async () => {
+    regionCalls += 1;
+    return { region: "ap-southeast-2" };
+  };
+  storage.getListObjects = async () => ({ Contents: contents });
+  storage.getObjectAccessUrl = async ({ Key }) => `https://source.example/${Key}`;
+  installThumbnailSigner({
+    createThumbnailApiWasabiStorage: () => ({
+      getObjectAccessUrl: async ({ Key }) => {
+        signedKeys.push(Key);
+        return `https://thumbnail.example/${Key}`;
+      },
+    }),
+  });
+
+  const result = await buckets.getListObjects({ Bucket: "multi-source", Prefix: "ignored/" });
+  assert.equal(regionCalls, 1);
+  assert.equal(signedKeys.length, 2);
+  assert.equal(result.Contents[0].AccessUrl, "https://source.example/root.jpg");
+  assert.equal(Object.hasOwn(result.Contents[0], "ThumbnailAccessUrl"), true);
+  assert.equal(Object.hasOwn(result.Contents[1], "ThumbnailAccessUrl"), true);
+
+  const wrong = await buckets.getListObjects({ Bucket: "not-enrolled" });
+  assert.equal(Object.hasOwn(wrong.Contents[0], "ThumbnailAccessUrl"), false);
+  assert.equal(regionCalls, 1);
+});
+
+test("v1 exact candidate retains precedence and v2 signs other eligible objects in an overlapping bucket", async () => {
+  const sourceKey = "photos/pilot.jpg";
+  const sourceRegion = "ap-southeast-2";
+  const v1Key = createThumbnailKey({
+    sourceRegion,
+    sourceBucket: "multi-source",
+    sourceKey,
+    etag: "pilot-etag",
+  });
+  const enrollment = validateSourceEnrollment([
+    { bucket: "multi-source", region: sourceRegion },
+  ], {
+    stage: "test",
+    derivedBucket: "derived-bucket",
+    derivedRegion: "ap-southeast-1",
+    internalBuckets: ["internal-derived"],
+  });
+  installConfig({
+    wasabi: { internalBucketSet: new Set(["internal-derived"]), internalBuckets: ["internal-derived"] },
+    thumbnailApi: {
+      enabled: true,
+      sourceBucket: "multi-source",
+      sourceRegion,
+      sourcePrefix: "photos/",
+      allowedKeys: new Set([v1Key]),
+      derivedBucket: "derived-bucket",
+      derivedRegion: "ap-southeast-1",
+      readAccessKeyId: "synthetic-read-access",
+      readSecretAccessKey: "synthetic-read-secret",
+      urlTtlSeconds: 3600,
+      v2: {
+        enabled: true,
+        sourceEnrollments: enrollment,
+      },
+    },
+  });
+  const signedKeys = [];
+  storage.getBucketRegion = async () => ({ region: sourceRegion });
+  storage.getListObjects = async () => ({
+    Contents: [
+      { Key: sourceKey, Size: 100, ETag: "pilot-etag" },
+      { Key: "other/deep.jpg", Size: 100, ETag: "other-etag" },
+    ],
+  });
+  storage.getObjectAccessUrl = async ({ Key }) => `https://source.example/${Key}`;
+  installThumbnailSigner({
+    createThumbnailApiWasabiStorage: () => ({
+      getObjectAccessUrl: async ({ Key }) => {
+        signedKeys.push(Key);
+        return `https://thumbnail.example/${Key}`;
+      },
+    }),
+  });
+
+  const result = await buckets.getListObjects({ Bucket: "multi-source", Prefix: "photos/" });
+  assert.equal(signedKeys[0], v1Key);
+  assert.equal(signedKeys.length, 2);
+  assert.equal(signedKeys[1].startsWith("v2/"), true);
+  assert.equal(result.Contents[0].AccessUrl, `https://source.example/${sourceKey}`);
+  assert.equal(result.Contents[1].AccessUrl, "https://source.example/other/deep.jpg");
 });

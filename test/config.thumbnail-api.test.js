@@ -170,7 +170,7 @@ test("v2 configuration rejects invalid flags, incomplete scope, unsafe regions, 
   assertConfigRejects(missingStage);
 });
 
-test("v1 and v2 scopes may coexist only when their bucket, region, and prefixes do not overlap", () => {
+test("legacy v1 and v2 may share a bucket without overlap rejection; v1 and v2 precedence is handled by the service", () => {
   const sharedNonOverlapping = enabledV2Environment({
     THUMBNAIL_API_ENABLED: "true",
     THUMBNAIL_API_SOURCE_BUCKET: "synthetic-sydney-source",
@@ -180,10 +180,10 @@ test("v1 and v2 scopes may coexist only when their bucket, region, and prefixes 
   });
 
   assert.equal(loadConfig(sharedNonOverlapping).status, 0);
-  assertConfigRejects(enabledV2Environment({
+  assert.equal(loadConfig(enabledV2Environment({
     ...sharedNonOverlapping,
     THUMBNAIL_API_SOURCE_PREFIX: "synthetic/photos/nested/",
-  }));
+  })).status, 0);
 });
 
 test("enabled PRD configuration requires the Tokyo source and Singapore destination", () => {
@@ -231,4 +231,28 @@ test("enabled config rejects missing scope, credential reuse and unexpected stag
 
 test("enabled config requires its derived bucket in the internal bucket set", () => {
   assertConfigRejects(enabledEnvironment({ WASABI_INTERNAL_BUCKETS: "another-internal" }));
+});
+
+test("explicit v2 JSON enrollment accepts multiple exact buckets and preserves legacy pilot coverage", () => {
+  const result = loadConfig(enabledV2Environment({
+    THUMBNAIL_API_V2_SOURCE_BUCKETS_JSON: JSON.stringify([
+      { bucket: "synthetic-sydney-source", region: "ap-southeast-2" },
+      { bucket: "synthetic-second-source", region: "ap-southeast-1" },
+    ]),
+  }));
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("explicit v2 JSON enrollment fails closed for malformed, empty, duplicate, conflicting or migration-unsafe values", () => {
+  for (const invalid of [
+    { THUMBNAIL_API_V2_SOURCE_BUCKETS_JSON: "" },
+    { THUMBNAIL_API_V2_SOURCE_BUCKETS_JSON: "{bad" },
+    { THUMBNAIL_API_V2_SOURCE_BUCKETS_JSON: "[]" },
+    { THUMBNAIL_API_V2_SOURCE_BUCKETS_JSON: '[{"bucket":"synthetic-sydney-source","region":"ap-southeast-2"},{"bucket":"synthetic-sydney-source","region":"ap-southeast-2"}]' },
+    { THUMBNAIL_API_V2_SOURCE_BUCKETS_JSON: '[{"bucket":"synthetic-sydney-source","region":"ap-southeast-2"},{"bucket":"synthetic-sydney-source","region":"us-east-1"}]' },
+    { THUMBNAIL_API_V2_SOURCE_BUCKETS_JSON: '[{"bucket":"synthetic-other","region":"ap-southeast-2"}]' },
+    { THUMBNAIL_API_V2_SOURCE_BUCKETS_JSON: '[{"bucket":"internal-derived","region":"ap-southeast-2"}]' },
+  ]) {
+    assertConfigRejects(enabledV2Environment(invalid));
+  }
 });

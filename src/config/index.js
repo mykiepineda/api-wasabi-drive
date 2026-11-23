@@ -1,4 +1,7 @@
 const { SUPPORTED_WASABI_REGIONS } = require("../storage/wasabi-regions");
+const { parseSourceEnrollmentJson } = require("../thumbnail/source-enrollment");
+
+const ABSENT_V2_SOURCE_ENROLLMENT = "__WASABI_DRIVE_NO_V2_SOURCE_ENROLLMENT__";
 
 const isValidTrustedUserObjectId = (value) => {
   if (typeof value !== "string") {
@@ -243,22 +246,62 @@ const parseThumbnailApiConfig = () => {
   let v2SourceBucket;
   let v2SourceRegion;
   let v2SourcePrefix;
+  let v2SourceEnrollments;
   if (v2Enabled) {
-    v2SourceBucket = process.env.THUMBNAIL_API_V2_SOURCE_BUCKET?.trim();
-    v2SourceRegion = process.env.THUMBNAIL_API_V2_SOURCE_REGION?.trim();
-    v2SourcePrefix = process.env.THUMBNAIL_API_V2_SOURCE_PREFIX?.trim();
+    const rawEnrollmentJson = process.env.THUMBNAIL_API_V2_SOURCE_BUCKETS_JSON;
+    if (rawEnrollmentJson !== undefined && rawEnrollmentJson !== ABSENT_V2_SOURCE_ENROLLMENT) {
+      let excludedBuckets = [];
+      if (process.env.THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON !== undefined
+        && String(process.env.THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON).trim() !== "") {
+        try {
+          excludedBuckets = JSON.parse(process.env.THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON);
+        } catch {
+          throw new Error("THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON contains malformed JSON.");
+        }
+        if (!Array.isArray(excludedBuckets) || excludedBuckets.some((bucket) => !isValidBucketName(bucket))) {
+          throw new Error("THUMBNAIL_API_V2_EXCLUDED_BUCKETS_JSON must be an array of exact bucket names.");
+        }
+      }
 
-    if (!v2SourceBucket || !v2SourceRegion || !v2SourcePrefix) {
-      throw new Error("THUMBNAIL_API_V2_ENABLED requires its source bucket, region, and prefix.");
-    }
-    if (!isValidBucketName(v2SourceBucket) || v2SourceRegion !== "ap-southeast-2") {
-      throw new Error("Thumbnail API v2 requires a valid source bucket in ap-southeast-2.");
-    }
-    if (!isValidThumbnailSourcePrefix(v2SourcePrefix)) {
-      throw new Error("THUMBNAIL_API_V2_SOURCE_PREFIX must be a non-empty slash-terminated prefix.");
-    }
-    if (v2SourceRegion === derivedRegion || v2SourceBucket === derivedBucket) {
-      throw new Error("The v2 source and derived bucket and regions must differ.");
+      v2SourceEnrollments = parseSourceEnrollmentJson(rawEnrollmentJson, {
+        stage,
+        derivedBucket,
+        derivedRegion,
+        internalBuckets: parseCommaSeparatedValues(process.env.WASABI_INTERNAL_BUCKETS),
+        excludedBuckets,
+      });
+
+      const legacyBucket = process.env.THUMBNAIL_API_V2_SOURCE_BUCKET?.trim();
+      const legacyRegion = process.env.THUMBNAIL_API_V2_SOURCE_REGION?.trim();
+      const legacyPrefix = process.env.THUMBNAIL_API_V2_SOURCE_PREFIX?.trim();
+      if (legacyBucket || legacyRegion || legacyPrefix) {
+        if (!legacyBucket || !legacyRegion) {
+          throw new Error("Legacy v2 bucket and region must be complete when migration enrollment is configured.");
+        }
+        if (!v2SourceEnrollments.isEnrolled(legacyBucket, legacyRegion)) {
+          throw new Error("The opt-in v2 enrollment must include the existing legacy pilot bucket and region.");
+        }
+      }
+    } else {
+      v2SourceBucket = process.env.THUMBNAIL_API_V2_SOURCE_BUCKET?.trim();
+      v2SourceRegion = process.env.THUMBNAIL_API_V2_SOURCE_REGION?.trim();
+      v2SourcePrefix = process.env.THUMBNAIL_API_V2_SOURCE_PREFIX?.trim();
+
+      if (!v2SourceBucket || !v2SourceRegion || !v2SourcePrefix) {
+        throw new Error("THUMBNAIL_API_V2_ENABLED requires its source bucket, region, and prefix.");
+      }
+      if (!isValidBucketName(v2SourceBucket) || v2SourceRegion !== "ap-southeast-2") {
+        throw new Error("Thumbnail API v2 requires a valid source bucket in ap-southeast-2.");
+      }
+      if (!isValidThumbnailSourcePrefix(v2SourcePrefix)) {
+        throw new Error("THUMBNAIL_API_V2_SOURCE_PREFIX must be a non-empty slash-terminated prefix.");
+      }
+      if (v2SourceBucket === derivedBucket) {
+        throw new Error("The v2 source bucket and derived bucket must differ.");
+      }
+      if (v2SourceRegion === derivedRegion) {
+        throw new Error("The legacy v2 source and derived region must differ.");
+      }
     }
   }
 
@@ -269,16 +312,6 @@ const parseThumbnailApiConfig = () => {
   );
   if (internalBuckets.length === 0 || !internalBuckets.includes(derivedBucket)) {
     throw new Error("WASABI_INTERNAL_BUCKETS must include the configured THUMBNAIL_API_DERIVED_BUCKET.");
-  }
-
-  if (
-    enabled
-    && v2Enabled
-    && sourceBucket === v2SourceBucket
-    && sourceRegion === v2SourceRegion
-    && (sourcePrefix.startsWith(v2SourcePrefix) || v2SourcePrefix.startsWith(sourcePrefix))
-  ) {
-    throw new Error("Thumbnail API v1 and v2 source scopes must not overlap.");
   }
 
   const allowedKeySet = new Set(allowedKeys.map((key) => key.toLowerCase()));
@@ -302,6 +335,7 @@ const parseThumbnailApiConfig = () => {
       sourceBucket: v2SourceBucket,
       sourceRegion: v2SourceRegion,
       sourcePrefix: v2SourcePrefix,
+      sourceEnrollments: v2SourceEnrollments,
     },
   };
 };

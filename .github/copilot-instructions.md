@@ -1,10 +1,10 @@
-# Wasabi Drive backend — Copilot instructions (Phase 8D-D Task 2A)
+# Wasabi Drive backend — Copilot instructions (Phase 8D-D Task 2A.1)
 
 ## Authority and project boundaries
 
 The owner is the architectural/security decision-maker. ChatGPT performs independent analysis and review; Copilot implements only the owner-approved task. Read and follow repository `AGENTS.md` first. It remains the general engineering and security authority. Preserve the current backend stack (Node.js 24, Express 4, CommonJS, AWS Lambda/API Gateway REST, Serverless Framework, Wasabi S3-compatible storage), stage isolation and HTTP/CLI -> service -> storage structure. No unrelated improvements, frameworks or cloud services.
 
-**Active Task 2A:** bounded *v2* production backfill capacity plus offline audit-performance characterization. Use the current checked-out `master`-derived feature branch and the separate `Phase-8D-D-Task-2A-Copilot-Agent-Prompt.md`. The latest Task 1B corrective PR is reported merged and TEST-validated; do not rely on an older archive SHA as proof of the current checkout.
+**Active Task 2A.1:** local-only, synthetic audit parser scalability investigation. The previous 250-object benchmark exposed substantial cost, so the v2 cap remains 10. The newly approved scope is a minimal equivalent parser optimization and regression/benchmark evidence; raising caps and campaign coordination are NOT authorized. Use `Task-2A-Audit-Parser-Scalability-Copilot-Agent-Prompt.md`.
 
 ## Git and Agent operating mode
 
@@ -21,14 +21,14 @@ The owner is the architectural/security decision-maker. ChatGPT performs indepen
 - Keep Task 1B's explicit approved bucket/region enrollment, literal slash-terminated prefixes, deliberate `--whole-bucket` selection and separate preflight credentials. Do not expand enrollment or production permissions.
 - Keep checkpoint/audit format/version/fingerprint compatibility, append-only durable intent then outcome order, directory sync, strict corruption detection, unknown-write fail-closed behavior, shared writer lock and private state. Local durable records and remote writes are not one atomic transaction.
 
-## Task 2A code and tests
+## Task 2A.1 code and tests
 
-1. **First benchmark** synthetic audit histories; existing append revalidates the whole journal. If observed cost is unsafe for 250 examined objects, report evidence and stop instead of weakening journal validation or changing the format.
-2. If measurements support it, implement explicit v2-only `maxObjects` cap **250**, retaining v1 cap **10** and maximum listing page size **10**. Update *both* runner and CLI summary validation. Treat `examined` (not generated count) as the cap.
-3. Test multi-page processing, cap boundaries, honest completion, restart with the same state, invalid input, invalid/unknown audit, lock loss, unknown writes and sanitized output. Preserve all existing tests.
-4. Run local Node.js 24 `npm test`, targeted tests, `git diff --check`, and report relevant offline benchmark results. No live Wasabi operations, including metadata-only dry runs.
-5. This task does **not** introduce a campaign coordinator or multi-bucket execution loop; those are separately reviewed Task 2B changes.
+1. Inspect existing synthetic benchmark and expensive repeated `Map` scans in `parseAuditRecords`. Keep `appendAuditRecord` validating the complete existing journal before each append, with per-record `fsync` and all path/inode/lock protections.
+2. If possible, implement only an equivalent linear-pass audit parser improvement; preserve all existing v1/v2 accepted and rejected records, including unknown/pending-intent fail-closed cases, journal boundaries, versions and corruption detection.
+3. Add focused synthetic tests for journal semantics and compatibility. Rebenchmark with repeated comparable runs; report host filesystem limitations. Do not weaken tests or claim guaranteed performance based on one local trial.
+4. **Do not raise either recipe cap** or change the ten-object listing-page limit. The cap decision will follow independent review of evidence.
+5. Run local Node.js 24 `npm test`, focused tests, `node --check`, `git diff --check`, and report files, results and outstanding risks. No live Wasabi operations or production state volume.
 
 ## Stop conditions
 
-Stop and report unexpected branch/worktree state, blocked tools, evidence that the performance goal cannot be reached safely, a required change to durability/fingerprints/state format or source permissions, or any need to deploy or access external systems. Do not broaden scope to make tests pass.
+Stop and report unexpected branch/worktree state, blocked tools, evidence that equivalence or durability cannot be preserved, a required change to fingerprints/state formats or source permissions, or any need to deploy or access external systems. Do not broaden scope to make tests pass.

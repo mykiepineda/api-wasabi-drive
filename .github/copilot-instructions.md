@@ -22,6 +22,7 @@
 ## Active changes - only these
 
 1. In **opt-in v2** preflight, non-root prefixes must be nonempty literal folder prefixes ending in `/`. Root means exactly empty prefix with explicit `wholeBucket === true`. Require this both in scope validation and the storage adapter. Reject partial-lexical overlaps such as `photos` matching `photos-old/`, and all implicit or malformed whole-bucket selection. Preserve v1 and legacy v2 behavior when opt-in is absent.
+   Opt-in and legacy scope remain distinct. Legacy v1/v2 behavior is unchanged unless the PRD v2 opt-in setting is explicitly present.
 2. Apply dedicated `THUMBNAIL_PRD_PREFLIGHT_*` credential reuse prevention in BOTH legacy and opted-in v2 modes, comparing access key and secret independently with any configured API, TEST, AWS and `THUMBNAIL_PRD_BACKFILL_*` values. Error messages and tests use no real secrets. This does not replace review of effective read-only Wasabi policy.
 3. In `scripts/thumbnail-backfill-prd.js` (and minimally the backfill runner if required), report ONLY allowlisted, evidence-backed diagnostic codes for config/scope/known state/write/provider failures. Unknowns remain generic failures. No raw error, path, object name, secret, audit record or provider body in CLI output; no change to execution, retry, lock or write semantics.
 4. Update task instructions and narrowly relevant README/test documentation. No unrelated style cleanup, framework upgrade, new cloud service, schema overhaul, campaign coordinator, increased caps, policy changes or deployments.

@@ -29,6 +29,27 @@ const validatePrefix = (prefix) => {
   return prefix;
 };
 
+const validateOptInV2Prefix = (prefix, wholeBucket) => {
+  if (wholeBucket === true) {
+    if (prefix !== "") throw new Error("invalid-source-prefix");
+    return prefix;
+  }
+  if (typeof prefix !== "string" || prefix === "") {
+    throw new Error("invalid-source-prefix");
+  }
+  if (
+    !isSafeConfiguredValue(prefix)
+    || !prefix.endsWith("/")
+    || prefix.startsWith("/")
+    || prefix.includes("\\")
+    || prefix.includes("//")
+    || prefix.split("/").some((part) => part === "." || part === "..")
+  ) {
+    throw new Error("invalid-source-prefix");
+  }
+  return prefix;
+};
+
 const validateSourceBucket = (bucket) => {
   if (
     !isSafeConfiguredValue(bucket)
@@ -42,6 +63,27 @@ const validateSourceBucket = (bucket) => {
     throw new Error("invalid-source-bucket");
   }
   return bucket;
+};
+
+const validateDedicatedPreflightCredentials = (env, accessKeyId, secretAccessKey) => {
+  const otherAccessKeyIds = [
+    env.WASABI_ACCESS_KEY_ID,
+    env.THUMBNAIL_TEST_WASABI_ACCESS_KEY_ID,
+    env.THUMBNAIL_PRD_BACKFILL_WASABI_ACCESS_KEY_ID,
+    env.AWS_ACCESS_KEY_ID,
+  ];
+  const otherSecretAccessKeys = [
+    env.WASABI_SECRET_ACCESS_KEY,
+    env.THUMBNAIL_TEST_WASABI_SECRET_ACCESS_KEY,
+    env.THUMBNAIL_PRD_BACKFILL_WASABI_SECRET_ACCESS_KEY,
+    env.AWS_SECRET_ACCESS_KEY,
+  ];
+  if (
+    otherAccessKeyIds.includes(accessKeyId)
+    || otherSecretAccessKeys.includes(secretAccessKey)
+  ) {
+    throw new Error("reused-preflight-credentials");
+  }
 };
 
 const loadPreflightConfig = (env, recipeId = "v1") => {
@@ -59,6 +101,7 @@ const loadPreflightConfig = (env, recipeId = "v1") => {
     ) {
       throw new Error("missing-preflight-configuration");
     }
+    validateDedicatedPreflightCredentials(env, accessKeyId, secretAccessKey);
     return {
       sourceBucket: undefined,
       sourceRegion: undefined,
@@ -81,22 +124,7 @@ const loadPreflightConfig = (env, recipeId = "v1") => {
   if (!SUPPORTED_WASABI_REGIONS.has(config.sourceRegion)) {
     throw new Error("invalid-source-region");
   }
-  const otherAccessKeyIds = [
-    env.WASABI_ACCESS_KEY_ID,
-    env.THUMBNAIL_TEST_WASABI_ACCESS_KEY_ID,
-    env.AWS_ACCESS_KEY_ID,
-  ];
-  const otherSecretAccessKeys = [
-    env.WASABI_SECRET_ACCESS_KEY,
-    env.THUMBNAIL_TEST_WASABI_SECRET_ACCESS_KEY,
-    env.AWS_SECRET_ACCESS_KEY,
-  ];
-  if (
-    otherAccessKeyIds.includes(config.accessKeyId)
-    || otherSecretAccessKeys.includes(config.secretAccessKey)
-  ) {
-    throw new Error("reused-preflight-credentials");
-  }
+  validateDedicatedPreflightCredentials(env, config.accessKeyId, config.secretAccessKey);
   return config;
 };
 
@@ -109,9 +137,10 @@ const validateScope = (options, config) => {
       destinationBucket: config.destinationBucket,
       destinationRegion: config.destinationRegion,
     }, config.prdV2);
-    if (options.wholeBucket) {
-      if (options.prefix !== "") throw new Error("source-scope-mismatch");
-    } else if (typeof options.prefix !== "string" || validatePrefix(options.prefix) !== options.prefix) {
+    const wholeBucket = options.wholeBucket === true;
+    try {
+      validateOptInV2Prefix(options.prefix, wholeBucket);
+    } catch {
       throw new Error("source-scope-mismatch");
     }
     return;
@@ -128,6 +157,7 @@ const validateScope = (options, config) => {
 module.exports = {
   loadPreflightConfig,
   validatePrefix,
+  validateOptInV2Prefix,
   validateScope,
   validateSourceBucket,
 };

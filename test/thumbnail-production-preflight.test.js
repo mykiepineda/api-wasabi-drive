@@ -78,6 +78,12 @@ test("configuration requires dedicated audit credentials and an exact safe scope
   assert.throws(() => loadPreflightConfig(configEnv({
     AWS_ACCESS_KEY_ID: approved.accessKeyId,
   })));
+  assert.throws(() => loadPreflightConfig(configEnv({
+    THUMBNAIL_PRD_BACKFILL_WASABI_ACCESS_KEY_ID: approved.accessKeyId,
+  })));
+  assert.throws(() => loadPreflightConfig(configEnv({
+    THUMBNAIL_PRD_BACKFILL_WASABI_SECRET_ACCESS_KEY: approved.secretAccessKey,
+  })));
 });
 
 test("CLI requires exact configured identifiers, explicit cap, and rejects write flags", async () => {
@@ -171,6 +177,37 @@ test("storage is pinned to one bucket/prefix and constructs only bounded ListObj
     region: approved.sourceRegion,
     accessKeyId: approved.accessKeyId,
     secretAccessKey: approved.secretAccessKey,
+  }));
+});
+
+test("opt-in preflight adapter rejects implicit or malformed root and prefix selection", () => {
+  const sourceEnrollment = {
+    isEnrolled: (bucket, region) => bucket === "approved-photo-source" && region === "ap-southeast-2",
+  };
+  const base = {
+    bucket: approved.sourceBucket,
+    region: approved.sourceRegion,
+    sourceEnrollment,
+    accessKeyId: approved.accessKeyId,
+    secretAccessKey: approved.secretAccessKey,
+  };
+  for (const scope of [
+    { prefix: "photos", wholeBucket: false },
+    { prefix: "", wholeBucket: false },
+    { prefix: "photos/", wholeBucket: true },
+    { prefix: "/photos/", wholeBucket: false },
+  ]) {
+    assert.throws(() => createThumbnailPreflightStorage({ ...base, ...scope }));
+  }
+  assert.doesNotThrow(() => createThumbnailPreflightStorage({
+    ...base,
+    prefix: "photos/2026/",
+    wholeBucket: false,
+  }));
+  assert.doesNotThrow(() => createThumbnailPreflightStorage({
+    ...base,
+    prefix: "",
+    wholeBucket: true,
   }));
 });
 

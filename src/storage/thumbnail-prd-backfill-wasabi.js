@@ -139,6 +139,9 @@ const createThumbnailPrdBackfillStorage = ({
       if (error instanceof ThumbnailStorageError) throw error;
       const status = error?.$metadata?.httpStatusCode ?? error?.statusCode;
       const code = error?.Code || error?.code || error?.name;
+      if (status === 401 || status === 403 || ["AccessDenied", "Forbidden"].includes(code)) {
+        throw new ThumbnailStorageError("provider-denied");
+      }
       if (operation === "head-derived" && status === 404 && ["NotFound", "NoSuchKey"].includes(code)) {
         throw new ThumbnailStorageError("destination-not-found");
       }

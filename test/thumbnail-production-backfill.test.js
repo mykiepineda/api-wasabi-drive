@@ -292,6 +292,7 @@ test("source allowlisting is byte-exact and CLI validates scope before creating 
     assert.equal(storageCreated, false);
     assert.deepEqual(JSON.parse(output[0]), {
       category: "failed",
+      code: "scope-rejected",
       examined: 0,
       generated: 0,
       alreadyPresent: 0,
@@ -944,7 +945,7 @@ test("provider 403 and unsupported conditional headers fail; 412 is only already
     bucket: scope.sourceBucket,
     key: `${scope.prefix}image.jpg`,
     region: scope.sourceRegion,
-  }), { code: "provider-failure" });
+  }), { code: "provider-denied" });
 
   let putCount = 0;
   const unsupportedStorage = createThumbnailPrdBackfillStorage({

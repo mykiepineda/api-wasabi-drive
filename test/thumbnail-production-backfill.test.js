@@ -1333,6 +1333,147 @@ test("v2 checkpoint and audit resume independently from the unchanged legacy v1 
   assert.equal(v1ResumeListing.calls[0].startAfter, `${scope.prefix}a.jpg`);
 });
 
+test("audit parser preserves legacy and intent/outcome history semantics with linear state tracking", async (t) => {
+  const timestamp = "2026-01-01T00:00:00.000Z";
+  const auditScopeId = (recipeId) => processingFingerprint(scope, recipeId);
+  const keyFor = (recipeId, index) => createThumbnailKey({
+    sourceRegion: scope.sourceRegion,
+    sourceBucket: scope.sourceBucket,
+    completeSourceKey: `${scope.prefix}synthetic-${index}.jpg`,
+    normalizedETag: `etag-${index}`,
+    formatVersion: recipeId,
+  });
+  const eventIdFor = (index) => index.toString(16).padStart(32, "0");
+  const makeIntent = (recipeId, index, overrides = {}) => ({
+    version: recipeId === "v1" ? 2 : 3,
+    ...(recipeId === "v2" ? { recipeId } : {}),
+    scopeId: auditScopeId(recipeId),
+    timestamp,
+    type: "write-intent",
+    eventId: eventIdFor(index),
+    derivedKey: keyFor(recipeId, index),
+    ...overrides,
+  });
+  const makeOutcome = (recipeId, index, outcome = "generated", overrides = {}) => ({
+    version: recipeId === "v1" ? 2 : 3,
+    ...(recipeId === "v2" ? { recipeId } : {}),
+    scopeId: auditScopeId(recipeId),
+    timestamp,
+    type: "write-outcome",
+    eventId: eventIdFor(index),
+    derivedKey: keyFor(recipeId, index),
+    outcome,
+    ...overrides,
+  });
+  const parseRecords = (records, recipeId, textOverride) => {
+    const auditPath = statePaths().auditPath;
+    const text = textOverride === undefined
+      ? `${records.map((record) => JSON.stringify(record)).join("\n")}\n`
+      : textOverride;
+    fs.writeFileSync(auditPath, text, { mode: 0o600 });
+    return parseAuditRecords(auditPath, auditScopeId(recipeId), () => {}, recipeId);
+  };
+
+  await t.test("valid legacy v1 and many v1/v2 intent-outcome pairs reparse", () => {
+    const legacy = Array.from({ length: 3 }, (_, index) => ({
+      version: 1,
+      scopeId: auditScopeId("v1"),
+      timestamp,
+      status: "generated",
+      derivedKey: keyFor("v1", 500 + index),
+    }));
+    const v1Pairs = Array.from({ length: 128 }, (_, index) => [
+      makeIntent("v1", index),
+      makeOutcome("v1", index),
+    ]).flat();
+    const v1Text = `${[...legacy, ...v1Pairs].map((record) => JSON.stringify(record)).join("\n")}\n`;
+    const v1First = parseRecords([], "v1", v1Text);
+    const v1Again = parseRecords([], "v1", v1Text);
+    assert.equal(v1First.records.length, 259);
+    assert.equal(v1First.intents.size, 128);
+    assert.deepEqual(v1Again, v1First);
+
+    const v2Pairs = Array.from({ length: 128 }, (_, index) => [
+      makeIntent("v2", index),
+      makeOutcome("v2", index),
+    ]).flat();
+    const v2 = parseRecords(v2Pairs, "v2");
+    assert.equal(v2.records.length, 256);
+    assert.equal(v2.intents.size, 128);
+    assert.equal(v2.intents.get(eventIdFor(127)).outcome, "generated");
+  });
+
+  await t.test("pending intents and generated-to-unknown corrections retain their terminal rules", () => {
+    const pending = parseRecords([makeIntent("v2", 900)], "v2");
+    assert.equal(pending.intents.get(eventIdFor(900)).outcome, null);
+
+    const correctedText = [
+      makeIntent("v2", 901),
+      makeOutcome("v2", 901),
+      makeOutcome("v2", 901, "unknown"),
+    ].map((record) => JSON.stringify(record)).join("\n") + "\n";
+    const corrected = parseRecords([], "v2", correctedText);
+    assert.equal(corrected.intents.get(eventIdFor(901)).outcome, "unknown");
+    assert.throws(() => parseRecords([], "v2", `${correctedText}${JSON.stringify(makeIntent("v2", 902))}\n`), {
+      message: "invalid-audit-record",
+    });
+  });
+
+  await t.test("duplicate, out-of-sequence, wrong-scope, wrong-recipe, wrong-key and damaged journals fail closed", () => {
+    const intent = makeIntent("v2", 910);
+    const outcome = makeOutcome("v2", 910);
+    const otherKey = keyFor("v2", 911);
+    const invalidJournals = [
+      {
+        recipeId: "v2",
+        records: [intent, outcome, makeIntent("v2", 910)],
+      },
+      {
+        recipeId: "v2",
+        records: [intent, makeIntent("v2", 912)],
+      },
+      {
+        recipeId: "v2",
+        records: [makeOutcome("v2", 913)],
+      },
+      {
+        recipeId: "v2",
+        records: [intent, makeOutcome("v2", 910, "generated", { derivedKey: otherKey })],
+      },
+      {
+        recipeId: "v2",
+        records: [makeIntent("v2", 914, { scopeId: "f".repeat(64) })],
+      },
+      {
+        recipeId: "v1",
+        records: [
+          makeIntent("v2", 915, { scopeId: auditScopeId("v1") }),
+          makeOutcome("v2", 915, "generated", { scopeId: auditScopeId("v1") }),
+        ],
+      },
+      {
+        recipeId: "v2",
+        records: [makeIntent("v2", 916, { derivedKey: "v2/aa/not-a-valid-derived-key.webp" })],
+      },
+    ];
+    for (const journal of invalidJournals) {
+      assert.throws(() => parseRecords(journal.records, journal.recipeId), {
+        message: "invalid-audit-record",
+      });
+    }
+
+    assert.throws(() => parseRecords([], "v2", "{malformed}\n"), {
+      message: "invalid-audit-record",
+    });
+    assert.throws(() => parseRecords([intent], "v2", JSON.stringify(intent)), {
+      message: "invalid-audit-boundary",
+    });
+    assert.throws(() => parseRecords([], "v2", "{\"version\":3"), {
+      message: "invalid-audit-boundary",
+    });
+  });
+});
+
 test("mismatched recipe checkpoints and audits fail before listing source objects", async () => {
   const paths = statePaths();
   const v2Paths = recipeStatePaths({ recipeId: "v2", ...paths });

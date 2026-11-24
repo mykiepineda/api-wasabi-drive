@@ -694,6 +694,8 @@ const parseAuditRecords = (
 
   const records = [];
   const intents = new Map();
+  let pendingEventId;
+  let hasUnknownOutcome = false;
   for (const line of text.slice(0, -1).split("\n")) {
     let record;
     try { record = JSON.parse(line); } catch { throw new Error("invalid-audit-record"); }
@@ -708,10 +710,12 @@ const parseAuditRecords = (
       || new Date(record.timestamp).toISOString() !== record.timestamp
       || !validDerivedKey(record.derivedKey, recipeId)
     ) throw new Error("invalid-audit-record");
-    const pending = [...intents.entries()].find(([, intent]) => intent.outcome === null);
     if (
-      [...intents.values()].some((intent) => intent.outcome === "unknown")
-      || (pending && (record.type !== "write-outcome" || record.eventId !== pending[0]))
+      hasUnknownOutcome
+      || (
+        pendingEventId !== undefined
+        && (record.type !== "write-outcome" || record.eventId !== pendingEventId)
+      )
     ) throw new Error("invalid-audit-record");
 
     const keys = Object.keys(record).sort().join(",");
@@ -729,6 +733,7 @@ const parseAuditRecords = (
           || intents.has(record.eventId)
         ) throw new Error("invalid-audit-record");
         intents.set(record.eventId, { derivedKey: record.derivedKey, outcome: null });
+        pendingEventId = record.eventId;
       } else if (record.type === "write-outcome") {
         const previousOutcome = intents.get(record.eventId)?.outcome;
         if (
@@ -742,6 +747,8 @@ const parseAuditRecords = (
           )
         ) throw new Error("invalid-audit-record");
         intents.get(record.eventId).outcome = record.outcome;
+        pendingEventId = undefined;
+        if (record.outcome === "unknown") hasUnknownOutcome = true;
       } else {
         throw new Error("invalid-audit-record");
       }

@@ -1,4 +1,5 @@
 const { SUPPORTED_WASABI_REGIONS } = require("../storage/wasabi-regions");
+const { loadPrdV2Enrollment, validatePrdV2Scope } = require("./prd-v2-config");
 
 const CONFIG_KEYS = {
   sourceBucket: "THUMBNAIL_PRD_PREFLIGHT_SOURCE_BUCKET",
@@ -15,6 +16,7 @@ const isSafeConfiguredValue = (value) =>
   && !/[\u0000-\u001f\u007f]/.test(value);
 
 const validatePrefix = (prefix) => {
+  if (prefix === "") return prefix;
   if (
     !isSafeConfiguredValue(prefix)
     || prefix.startsWith("/")
@@ -42,7 +44,32 @@ const validateSourceBucket = (bucket) => {
   return bucket;
 };
 
-const loadPreflightConfig = (env) => {
+const loadPreflightConfig = (env, recipeId = "v1") => {
+  if (recipeId === "v2" && env.THUMBNAIL_PRD_V2_SOURCE_BUCKETS_JSON !== undefined) {
+    const prdV2 = loadPrdV2Enrollment(env);
+    if (!prdV2) throw new Error("invalid-prd-v2-enrollment");
+    const destinationBucket = prdV2.derivedBucket;
+    const accessKeyId = env.THUMBNAIL_PRD_PREFLIGHT_WASABI_ACCESS_KEY_ID;
+    const secretAccessKey = env.THUMBNAIL_PRD_PREFLIGHT_WASABI_SECRET_ACCESS_KEY;
+    if (
+      typeof accessKeyId !== "string"
+      || !isSafeConfiguredValue(accessKeyId)
+      || typeof secretAccessKey !== "string"
+      || !isSafeConfiguredValue(secretAccessKey)
+    ) {
+      throw new Error("missing-preflight-configuration");
+    }
+    return {
+      sourceBucket: undefined,
+      sourceRegion: undefined,
+      sourcePrefix: undefined,
+      destinationBucket,
+      destinationRegion: prdV2.derivedRegion,
+      accessKeyId,
+      secretAccessKey,
+      prdV2,
+    };
+  }
   const config = Object.fromEntries(
     Object.entries(CONFIG_KEYS).map(([key, envName]) => [key, env[envName]]),
   );
@@ -74,6 +101,21 @@ const loadPreflightConfig = (env) => {
 };
 
 const validateScope = (options, config) => {
+  if (config.prdV2) {
+    if (options.recipeId !== "v2") throw new Error("source-scope-mismatch");
+    validatePrdV2Scope({
+      sourceBucket: options.sourceBucket,
+      sourceRegion: options.sourceRegion,
+      destinationBucket: config.destinationBucket,
+      destinationRegion: config.destinationRegion,
+    }, config.prdV2);
+    if (options.wholeBucket) {
+      if (options.prefix !== "") throw new Error("source-scope-mismatch");
+    } else if (typeof options.prefix !== "string" || validatePrefix(options.prefix) !== options.prefix) {
+      throw new Error("source-scope-mismatch");
+    }
+    return;
+  }
   if (
     options.sourceBucket !== config.sourceBucket
     || options.sourceRegion !== config.sourceRegion

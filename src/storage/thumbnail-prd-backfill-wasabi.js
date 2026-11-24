@@ -44,6 +44,7 @@ const createThumbnailPrdBackfillStorage = ({
   secretAccessKey,
   createClient = (options) => new S3Client(options),
 }) => {
+  const v2OptIn = recipeId === "v2" && scope?.prdV2 === true;
   if (
     !scope
     || !validBucketName(scope.sourceBucket)
@@ -51,18 +52,35 @@ const createThumbnailPrdBackfillStorage = ({
     || typeof scope.prefix !== "string"
     || !validBucketName(scope.destinationBucket)
     || typeof scope.destinationRegion !== "string"
-    || !isAllowedProductionSourceRegion(recipeId, scope.sourceRegion)
+    || (
+      v2OptIn
+        ? !SUPPORTED_WASABI_REGIONS.has(scope.sourceRegion)
+        : !isAllowedProductionSourceRegion(recipeId, scope.sourceRegion)
+    )
     || !SUPPORTED_WASABI_REGIONS.has(scope.sourceRegion)
     || scope.destinationRegion !== "ap-southeast-1"
     || scope.sourceBucket === scope.destinationBucket
-    || !scope.prefix
-    || !scope.prefix.endsWith("/")
-    || scope.prefix !== scope.prefix.trim()
-    || scope.prefix.startsWith("/")
-    || scope.prefix.includes("\\")
-    || scope.prefix.includes("//")
-    || /[\u0000-\u001f\u007f]/.test(scope.prefix)
-    || scope.prefix.split("/").some((part) => part === "." || part === "..")
+    || (
+      v2OptIn
+      && (
+        !scope.sourceEnrollment
+        || typeof scope.sourceEnrollment.isEnrolled !== "function"
+        || !scope.sourceEnrollment.isEnrolled(scope.sourceBucket, scope.sourceRegion)
+      )
+    )
+    || (scope.prefix === "" && (recipeId !== "v2" || scope.wholeBucket !== true))
+    || (
+      scope.prefix !== ""
+      && (
+        !scope.prefix.endsWith("/")
+        || scope.prefix !== scope.prefix.trim()
+        || scope.prefix.startsWith("/")
+        || scope.prefix.includes("\\")
+        || scope.prefix.includes("//")
+        || /[\u0000-\u001f\u007f]/.test(scope.prefix)
+        || scope.prefix.split("/").some((part) => part === "." || part === "..")
+      )
+    )
     || typeof accessKeyId !== "string"
     || !accessKeyId.trim()
     || accessKeyId !== accessKeyId.trim()

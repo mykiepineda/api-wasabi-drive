@@ -187,6 +187,32 @@ The following Sydney v2 command is **syntax-only and NOT AUTHORIZED for live or 
 npm run thumbnail:backfill:prd -- --source-bucket "<owner-approved-source-bucket>" --source-region "ap-southeast-2" --prefix "<owner-approved-prefix>/" --max-objects 2 --recipe v2
 ```
 
+### Task 1B PRD v2 opt-in scope
+
+Legacy mode remains active when `THUMBNAIL_PRD_V2_SOURCE_BUCKETS_JSON` is absent. Legacy v1 is unchanged; legacy v2 also remains the exact old single-bucket/prefix behavior until the explicit opt-in variables are supplied. Opt-in v2 is a local-only, non-secret migration configuration and does not alter API or TEST configuration:
+
+```powershell
+$env:THUMBNAIL_PRD_V2_SOURCE_BUCKETS_JSON = '[{"bucket":"synthetic-source","region":"ap-southeast-2"}]'
+$env:THUMBNAIL_PRD_V2_EXCLUDED_BUCKETS_JSON = '["synthetic-test-bucket","synthetic-ops-bucket"]'
+$env:THUMBNAIL_PRD_V2_DERIVED_BUCKET = "synthetic-private-derived"
+```
+
+Every opt-in source must match an exact `{bucket, region}` pair. The fixed derived bucket must match `THUMBNAIL_PRD_BACKFILL_DERIVED_BUCKET`, and the excluded list must explicitly identify protected TEST, internal, operational and state buckets. Migrate by removing legacy `THUMBNAIL_PRD_BACKFILL_SOURCE_*` values rather than keeping duplicate migration inputs. Malformed, empty or mismatched opt-in settings fail before storage creation. Synthetic values are examples only; actual bucket names remain outside Git.
+
+Backfill and preflight both require an explicit scope selector:
+
+```powershell
+# Literal slash-terminated folder prefix
+npm run thumbnail:backfill:prd -- --source-bucket "<approved-source>" --source-region "ap-southeast-2" --prefix "photos/2026/" --recipe v2 --max-objects 10
+
+# Explicit whole-bucket root
+npm run thumbnail:preflight:prd -- --source-bucket "<approved-source>" --source-region "ap-southeast-2" --whole-bucket --recipe v2 --max-objects 100
+```
+
+`--prefix` and `--whole-bucket` are mutually exclusive. A nonempty prefix must retain its slash-terminated literal contract; root is represented only by `""` through `--whole-bucket`, never by `/`, a blank value or a normalized path. Preflight retains its read-only credentials and 100/1000 object defaults/limits; preflight opt-in requires `--recipe v2`. Backfill remains capped at 10 examined objects and page size 1-10. Use separate checkpoint/audit paths for root and prefixed jobs.
+
+Task 1B performs mocked tests and documentation only. It does not authorize a live dry-run, execution, policy attachment, credential change or deployment. TEST behavior remains unchanged; PRD rollout requires separate owner approval, verified Wasabi policy behavior, TEST rehearsal and an explicit rollback plan. No live rollback deletes source or derived objects.
+
 ## Phase 8 Task 8C-A1 — Recorded findings (October 2026)
 
 The following findings summarize local, read-only inventory across **nine** existing source buckets and representative **local** thumbnail experiments. Figures are aggregate or anonymized: no private bucket names, full object keys, personal filenames, credentials, or photo samples are included. These are measurements and prototype results, **not** confirmation that production thumbnail generation is implemented.

@@ -21,9 +21,15 @@ const MAX_PAGE_SIZE = MAX_PREFLIGHT_PAGE_SIZE;
 
 const parseArguments = (args) => {
   const values = new Map();
-  const valueFlags = new Set(["--source-bucket", "--source-region", "--prefix", "--max-objects", "--page-size"]);
+  const valueFlags = new Set(["--source-bucket", "--source-region", "--prefix", "--max-objects", "--page-size", "--recipe"]);
+  const flags = new Set();
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
+    if (flag === "--whole-bucket") {
+      if (flags.has(flag)) throw new Error("invalid-arguments");
+      flags.add(flag);
+      continue;
+    }
     if (
       !valueFlags.has(flag)
       || values.has(flag)
@@ -36,19 +42,29 @@ const parseArguments = (args) => {
     values.set(flag, args[index + 1]);
     index += 1;
   }
-  for (const flag of ["--source-bucket", "--source-region", "--prefix", "--max-objects"]) {
+  for (const flag of ["--source-bucket", "--source-region", "--max-objects"]) {
     if (!values.has(flag)) {
       throw new Error("invalid-arguments");
     }
   }
+  const recipeId = values.get("--recipe") ?? "v1";
+  if (!["v1", "v2"].includes(recipeId)) throw new Error("invalid-arguments");
+  const hasPrefix = values.has("--prefix");
+  const hasWholeBucket = flags.has("--whole-bucket");
+  if (hasPrefix === hasWholeBucket) throw new Error("invalid-arguments");
+  if (recipeId === "v1" && hasWholeBucket) throw new Error("invalid-arguments");
+  if (hasPrefix && (values.get("--prefix") === "")) throw new Error("invalid-arguments");
 
-  return {
+  const parsed = {
     sourceBucket: values.get("--source-bucket"),
     sourceRegion: values.get("--source-region"),
-    prefix: values.get("--prefix"),
+    prefix: hasPrefix ? values.get("--prefix") : "",
     maxObjects: values.get("--max-objects"),
     pageSize: values.get("--page-size"),
   };
+  if (hasWholeBucket) parsed.wholeBucket = true;
+  if (values.has("--recipe")) parsed.recipeId = recipeId;
+  return parsed;
 };
 
 const parseBoundedInteger = (value, defaultValue, maximum, errorCode) => {

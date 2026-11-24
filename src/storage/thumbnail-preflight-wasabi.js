@@ -7,14 +7,25 @@ const createThumbnailPreflightStorage = ({
   bucket,
   prefix,
   region,
+  wholeBucket = false,
   accessKeyId,
   secretAccessKey,
+  sourceEnrollment,
   createClient = (options) => new S3Client(options),
 }) => {
   if (
     !SUPPORTED_WASABI_REGIONS.has(region)
     || validateSourceBucket(bucket) !== bucket
-    || validatePrefix(prefix) !== prefix
+    || (
+      sourceEnrollment !== undefined
+      && (
+        !sourceEnrollment
+        || typeof sourceEnrollment.isEnrolled !== "function"
+        || !sourceEnrollment.isEnrolled(bucket, region)
+      )
+    )
+    || (prefix !== "" && validatePrefix(prefix) !== prefix)
+    || (prefix === "" && wholeBucket !== true)
     || typeof accessKeyId !== "string"
     || !accessKeyId.trim()
     || typeof secretAccessKey !== "string"

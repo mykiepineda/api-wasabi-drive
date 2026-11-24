@@ -11,6 +11,7 @@ const { MAX_SOURCE_BYTES } = require("./policy");
 const { isAllowedProductionSourceRegion } = require("./production-backfill-region");
 const { SUPPORTED_WASABI_REGIONS } = require("../storage/wasabi-regions");
 const { validDerivedKey } = require("../storage/thumbnail-prd-backfill-wasabi");
+const { loadPrdV2Enrollment, validatePrdV2Scope } = require("./prd-v2-config");
 
 const MAX_OBJECTS = 10;
 const DEFAULT_PAGE_SIZE = 5;
@@ -72,6 +73,7 @@ const validateBucket = (bucket) => {
 };
 
 const validatePrefix = (prefix) => {
+  if (prefix === "") return prefix;
   if (
     !isSafeValue(prefix)
     || !prefix.endsWith("/")
@@ -90,6 +92,34 @@ const loadProductionBackfillConfig = (env, recipeId = "v1") => {
   const config = Object.fromEntries(
     Object.entries(CONFIG_KEYS).map(([key, envName]) => [key, env[envName]]),
   );
+  const prdV2 = recipeId === "v2" ? loadPrdV2Enrollment(env) : null;
+  if (recipeId === "v2" && prdV2) {
+    if (
+      env.THUMBNAIL_PRD_BACKFILL_SOURCE_BUCKET !== undefined
+      || env.THUMBNAIL_PRD_BACKFILL_SOURCE_REGION !== undefined
+      || env.THUMBNAIL_PRD_BACKFILL_SOURCE_PREFIX !== undefined
+    ) {
+      throw new Error("invalid-prd-v2-migration");
+    }
+  }
+  if (prdV2) {
+    const requiredWithoutLegacySource = [
+      "stage",
+      "destinationBucket",
+      "destinationRegion",
+      "accessKeyId",
+      "secretAccessKey",
+    ];
+    if (
+      requiredWithoutLegacySource.some((key) => !isSafeValue(config[key]))
+      || config.stage !== "prd"
+      || !isSupportedThumbnailRecipe(recipeId)
+      || config.destinationRegion !== "ap-southeast-1"
+      || (env.DEPLOYMENT_STAGE !== undefined && env.DEPLOYMENT_STAGE !== "prd")
+    ) {
+      throw new Error("invalid-production-backfill-configuration");
+    }
+  } else {
   if (
     Object.values(config).some((value) => !isSafeValue(value))
     || config.stage !== "prd"
@@ -99,6 +129,7 @@ const loadProductionBackfillConfig = (env, recipeId = "v1") => {
     || (env.DEPLOYMENT_STAGE !== undefined && env.DEPLOYMENT_STAGE !== "prd")
   ) {
     throw new Error("invalid-production-backfill-configuration");
+  }
   }
 
   for (const [name, value] of Object.entries(env)) {
@@ -114,26 +145,70 @@ const loadProductionBackfillConfig = (env, recipeId = "v1") => {
     }
   }
 
-  validateBucket(config.sourceBucket);
   validateBucket(config.destinationBucket);
-  validatePrefix(config.prefix);
-  if (config.sourceBucket === config.destinationBucket) {
-    throw new Error("invalid-production-backfill-scope");
-  }
-  if (!SUPPORTED_WASABI_REGIONS.has(config.sourceRegion)
-    || !SUPPORTED_WASABI_REGIONS.has(config.destinationRegion)) {
+  if (!prdV2) {
+    validateBucket(config.sourceBucket);
+    validatePrefix(config.prefix);
+    if (config.sourceBucket === config.destinationBucket) {
+      throw new Error("invalid-production-backfill-scope");
+    }
+    if (!SUPPORTED_WASABI_REGIONS.has(config.sourceRegion)
+      || !SUPPORTED_WASABI_REGIONS.has(config.destinationRegion)) {
+      throw new Error("invalid-production-backfill-region");
+    }
+  } else if (!SUPPORTED_WASABI_REGIONS.has(config.destinationRegion)) {
     throw new Error("invalid-production-backfill-region");
+  }
+  if (recipeId === "v2") {
+    if (prdV2) {
+      if (
+        env.THUMBNAIL_PRD_BACKFILL_SOURCE_BUCKET !== undefined
+        || env.THUMBNAIL_PRD_BACKFILL_SOURCE_REGION !== undefined
+        || env.THUMBNAIL_PRD_BACKFILL_SOURCE_PREFIX !== undefined
+      ) {
+        throw new Error("invalid-prd-v2-migration");
+      }
+      if (prdV2.derivedBucket !== config.destinationBucket) {
+        throw new Error("invalid-prd-v2-derived-bucket");
+      }
+      Object.defineProperty(config, "_prdV2", { value: prdV2, enumerable: false });
+    }
   }
   return config;
 };
 
 const validateSourceScope = (options, config, recipeId = options.recipeId ?? "v1") => {
+  if (recipeId === "v2" && config._prdV2) {
+    if (
+      !isSupportedThumbnailRecipe(recipeId)
+      || !config._prdV2.enrollment.isEnrolled(options.sourceBucket, options.sourceRegion)
+    ) {
+      throw new Error("source-scope-mismatch");
+    }
+    validatePrdV2Scope({
+      sourceBucket: options.sourceBucket,
+      sourceRegion: options.sourceRegion,
+      destinationBucket: config.destinationBucket,
+      destinationRegion: config.destinationRegion,
+    }, config._prdV2);
+  } else {
   if (
     !isSupportedThumbnailRecipe(recipeId)
     || !isAllowedProductionSourceRegion(recipeId, config.sourceRegion)
     || options.sourceBucket !== config.sourceBucket
     || options.sourceRegion !== config.sourceRegion
     || options.prefix !== config.prefix
+  ) {
+    throw new Error("source-scope-mismatch");
+  }
+  }
+  if (options.wholeBucket) {
+    if (recipeId !== "v2" || !config._prdV2 || options.prefix !== "") {
+      throw new Error("source-scope-mismatch");
+    }
+  } else if (
+    typeof options.prefix !== "string"
+    || !validatePrefix(options.prefix)
   ) {
     throw new Error("source-scope-mismatch");
   }
@@ -165,25 +240,33 @@ const parseArguments = (args) => {
       }
       values.set(flag, args[index + 1]);
       index += 1;
-    } else if (flag === "--execute" || flag === "--confirm-prd-backfill") {
+    } else if (flag === "--execute" || flag === "--confirm-prd-backfill" || flag === "--whole-bucket") {
       if (flags.has(flag)) throw new Error("invalid-arguments");
       flags.add(flag);
     } else {
       throw new Error("invalid-arguments");
     }
   }
-  for (const flag of ["--source-bucket", "--source-region", "--prefix", "--max-objects"]) {
+  for (const flag of ["--source-bucket", "--source-region", "--max-objects"]) {
     if (!values.has(flag)) throw new Error("invalid-arguments");
   }
   const recipeId = values.get("--recipe") ?? "v1";
   if (!isSupportedThumbnailRecipe(recipeId)) throw new Error("invalid-arguments");
+  const hasPrefix = values.has("--prefix");
+  const hasWholeBucket = flags.has("--whole-bucket");
+  if (hasPrefix === hasWholeBucket) throw new Error("invalid-arguments");
+  if (recipeId === "v1" && hasWholeBucket) throw new Error("invalid-arguments");
+  if (hasPrefix) {
+    const prefix = values.get("--prefix");
+    if (typeof prefix !== "string" || prefix === "") throw new Error("invalid-arguments");
+  }
   if (flags.has("--execute") !== flags.has("--confirm-prd-backfill")) {
     throw new Error("invalid-arguments");
   }
-  return {
+  const parsed = {
     sourceBucket: values.get("--source-bucket"),
     sourceRegion: values.get("--source-region"),
-    prefix: values.get("--prefix"),
+    prefix: hasPrefix ? values.get("--prefix") : "",
     maxObjects: values.get("--max-objects"),
     pageSize: values.get("--page-size"),
     checkpoint: values.get("--checkpoint"),
@@ -191,6 +274,8 @@ const parseArguments = (args) => {
     recipeId,
     execute: flags.has("--execute"),
   };
+  if (hasWholeBucket) parsed.wholeBucket = true;
+  return parsed;
 };
 
 const recipeStatePaths = ({ recipeId = "v1", checkpointPath, auditPath }) => {
@@ -874,11 +959,22 @@ const runProductionBackfill = async ({
   if (
     !scope
     || !SUPPORTED_WASABI_REGIONS.has(scope.sourceRegion)
-    || !isAllowedProductionSourceRegion(recipeId, scope.sourceRegion)
+    || (
+      scope.prdV2 === true
+        ? false
+        : !isAllowedProductionSourceRegion(recipeId, scope.sourceRegion)
+    )
     || scope.destinationRegion !== "ap-southeast-1"
     || validateBucket(scope.sourceBucket) !== scope.sourceBucket
     || validateBucket(scope.destinationBucket) !== scope.destinationBucket
-    || validatePrefix(scope.prefix) !== scope.prefix
+    || (
+      scope.prefix !== ""
+      && validatePrefix(scope.prefix) !== scope.prefix
+    )
+    || (
+      scope.prefix === ""
+      && (recipeId !== "v2" || scope.wholeBucket !== true)
+    )
     || scope.sourceBucket === scope.destinationBucket
     || !Number.isSafeInteger(maxObjects)
     || maxObjects < 1

@@ -11,6 +11,16 @@ const {
 const { createThumbnailPrdBackfillStorage } = require("../src/storage/thumbnail-prd-backfill-wasabi");
 
 const SAFE_CATEGORIES = new Set(["dry-run", "completed", "paused-cap", "failed"]);
+const SAFE_CODES = new Set([
+  "configuration-rejected",
+  "scope-rejected",
+  "provider-denied",
+  "provider-failure",
+  "invalid-state",
+  "unknown-write-outcome",
+  "state-complete",
+  "empty-scope",
+]);
 const SUMMARY_COUNTS = [
   "examined",
   "generated",
@@ -34,6 +44,7 @@ const safeSummary = (result) => {
     && SAFE_CATEGORIES.has(result.category);
   return {
     category: valid ? result.category : "failed",
+    ...(valid && SAFE_CODES.has(result.code) ? { code: result.code } : {}),
     ...Object.fromEntries(SUMMARY_COUNTS.map((key) => [key, valid ? result[key] : 0])),
   };
 };
@@ -78,11 +89,14 @@ const main = async (
     }
 
     const scope = {
-      sourceBucket: config.sourceBucket,
-      sourceRegion: config.sourceRegion,
-      prefix: config.prefix,
+      sourceBucket: options.sourceBucket,
+      sourceRegion: options.sourceRegion,
+      prefix: options.prefix,
+      wholeBucket: options.wholeBucket === true,
       destinationBucket: config.destinationBucket,
       destinationRegion: config.destinationRegion,
+      prdV2: Boolean(config._prdV2),
+      sourceEnrollment: config._prdV2?.enrollment,
     };
     const storage = createStorage({
       scope,

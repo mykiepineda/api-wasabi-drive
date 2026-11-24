@@ -68,7 +68,7 @@ const main = async (
 ) => {
   try {
     const options = parseArguments(args);
-    const config = loadPreflightConfig(env);
+    const config = loadPreflightConfig(env, options.recipeId);
     validateScope(options, config);
     const maxObjects = parseBoundedInteger(
       options.maxObjects,
@@ -83,16 +83,18 @@ const main = async (
       "invalid-page-size",
     );
     const storage = createStorage({
-      bucket: config.sourceBucket,
-      prefix: config.sourcePrefix,
-      region: config.sourceRegion,
+      bucket: options.sourceBucket,
+      prefix: options.prefix,
+      wholeBucket: options.wholeBucket === true,
+      region: options.sourceRegion,
+      sourceEnrollment: config.prdV2?.enrollment,
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
     });
     const summary = await runScan({
-      bucket: config.sourceBucket,
-      region: config.sourceRegion,
-      prefix: config.sourcePrefix,
+      bucket: options.sourceBucket,
+      region: options.sourceRegion,
+      prefix: options.prefix,
       maxObjects,
       pageSize,
       listPage: ({ pageSize: requestedPageSize, continuationToken }) => storage.listPage({

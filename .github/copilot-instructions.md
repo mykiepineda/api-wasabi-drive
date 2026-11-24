@@ -1,38 +1,34 @@
-# Wasabi Drive backend - GitHub Copilot instructions (Phase 8D-D, Task 1B corrections)
+# Wasabi Drive backend — Copilot instructions (Phase 8D-D Task 2A)
 
-**Active task:** fix opt-in production v2 preflight prefix/root selection and credential segregation; complete truthful, sanitized backfill CLI diagnostics. Base all edits on the current checked-out source (owner supplied `master (52)`; archive records commit `4defb81471e0edadb85e9ca1f7c2e492a7c475b9`). **Do not implement Task 2 or activate expanded PRD enrollment.**
+## Authority and project boundaries
 
-## Authority, Git and workflow
+The owner is the architectural/security decision-maker. ChatGPT performs independent analysis and review; Copilot implements only the owner-approved task. Read and follow repository `AGENTS.md` first. It remains the general engineering and security authority. Preserve the current backend stack (Node.js 24, Express 4, CommonJS, AWS Lambda/API Gateway REST, Serverless Framework, Wasabi S3-compatible storage), stage isolation and HTTP/CLI -> service -> storage structure. No unrelated improvements, frameworks or cloud services.
 
-- The owner makes architecture, security and deployment decisions. ChatGPT performs independent analysis and review; Copilot/Codex implements the explicitly approved bounded task.
-- Read `AGENTS.md`, this file, the approved Phase 8D-D handoff (revision 2026-11-23.2), relevant tests, and the latest checkout before editing. The archive SHA is a reference only; verify actual local HEAD.
-- The `master` GitHub ruleset was recently found disabled and has now been reactivated. Never commit, push or edit on `master`. Work ONLY on the owner-created `fix/v2-preflight-scope-and-diagnostics` branch from current `master`. Run `git branch --show-current`, `git status -sb`, `git branch -vv` and `git rev-parse HEAD` before changes. If the branch or worktree is unexpected, STOP.
-- Leave all edits uncommitted. Do not push, merge, create PRs or deploy. Preserve unrelated files and existing uncommitted work.
-- Do not access live AWS/Wasabi, run metadata-only live preflight, production backfill, Docker campaign, Bruno integration, or policy operations. Do not touch private checkpoint/audit/backup files, print secrets or inspect personal data. Use synthetic tests and mocks.
-- Run Node.js 24 `npm test`, `git diff --check`, and relevant `node --check` locally. Preserve all tests and report actual results; do not weaken assertions to make them pass.
+**Active Task 2A:** bounded *v2* production backfill capacity plus offline audit-performance characterization. Use the current checked-out `master`-derived feature branch and the separate `Phase-8D-D-Task-2A-Copilot-Agent-Prompt.md`. The latest Task 1B corrective PR is reported merged and TEST-validated; do not rely on an older archive SHA as proof of the current checkout.
 
-## Architecture and immutable safeguards
+## Git and Agent operating mode
 
-- Retain React/Firebase, Node.js 24, Express 4/CommonJS, API Gateway REST, Lambda, Serverless Framework v4 and Wasabi storage. Preserve HTTP/CLI entry -> application/service -> storage adapter -> Wasabi/AWS SDK separation, TEST/PRD isolation, Microsoft Entra authentication, backend trusted-user authorization, private buckets and fixed destinations.
-- Sydney's 100 accepted v2 derivatives and Tokyo's 13-photo v1 pilot are completed history. Do not regenerate them, alter image recipes or deterministic key identity, or touch production durable evidence.
-- V2 recipe remains WebP 200 x 190, center-crop, quality 80, stripped metadata, no enlargement, 25 MiB source cap. Preserve v1 precedence for its approved pilot keys and original `AccessUrl`/thumbnail fallback. No per-file thumbnail catalog or browser existence HEAD requests.
-- Backfill remains ten examined objects maximum per invocation and page limit ten, with strict bounded lists, source-identity-bound derived keys, source read-only access, `IfNoneMatch: "*"` derived writes, private checkpoints and append-only durable audit, conservative unknown-write detection, shared writer lock and no state resets. Do not introduce automatic retries.
-- Task 1B's multi-bucket enrollment is a **transitional explicit PRD allowlist**. Never grant access implicitly to new buckets, internal buckets or TEST resources. Future automatic thumbnail lifecycle and auto-discovery are separate design/approval work.
+- Owner creates `feature/v2-backfill-bounded-batches` from up-to-date `master` before giving the prompt to the Agent. Verify branch and worktree read-only before editing; stop if unexpected. NEVER work on `master`.
+- In VS Code, use **Interactive + Assisted** permissions. The Agent may read ordinary repository source, make approved local edits and run local synthetic tests. Ask approval for installing dependencies; do not bypass any tool-denied effect. Keep terminal permissions specific rather than `Allow All`.
+- The Agent must NOT commit, push, merge, create a PR, deploy, change credentials/policies, execute a live backfill, call Wasabi/AWS, run live integration tests, mount production state, or alter Docker production volumes. Do not expose secrets or private filenames.
+- Owner manually commits/pushes feature changes, creates a Draft PR and transfers feature-branch ZIP and test summary to ChatGPT for independent review. Merge only after review/required PR checks; protect `master`.
 
-## Active changes - only these
+## Immutable data, recipe and security contracts
 
-1. In **opt-in v2** preflight, non-root prefixes must be nonempty literal folder prefixes ending in `/`. Root means exactly empty prefix with explicit `wholeBucket === true`. Require this both in scope validation and the storage adapter. Reject partial-lexical overlaps such as `photos` matching `photos-old/`, and all implicit or malformed whole-bucket selection. Preserve v1 and legacy v2 behavior when opt-in is absent.
-   Opt-in and legacy scope remain distinct. Legacy v1/v2 behavior is unchanged unless the PRD v2 opt-in setting is explicitly present.
-2. Apply dedicated `THUMBNAIL_PRD_PREFLIGHT_*` credential reuse prevention in BOTH legacy and opted-in v2 modes, comparing access key and secret independently with any configured API, TEST, AWS and `THUMBNAIL_PRD_BACKFILL_*` values. Error messages and tests use no real secrets. This does not replace review of effective read-only Wasabi policy.
-3. In `scripts/thumbnail-backfill-prd.js` (and minimally the backfill runner if required), report ONLY allowlisted, evidence-backed diagnostic codes for config/scope/known state/write/provider failures. Unknowns remain generic failures. No raw error, path, object name, secret, audit record or provider body in CLI output; no change to execution, retry, lock or write semantics.
-4. Update task instructions and narrowly relevant README/test documentation. No unrelated style cleanup, framework upgrade, new cloud service, schema overhaul, campaign coordinator, increased caps, policy changes or deployments.
+- Preserve completed Sydney v2 collection and legacy Tokyo v1 pilot; do not reprocess them.
+- v2 recipe remains WebP 200×190 center-crop, quality 80, metadata stripped, no enlargement; source eligibility and 25 MiB limit unchanged.
+- Keep v1 precedence where applicable, deterministic keys and ETag binding; fixed private derived bucket and namespace, dedicated least-privilege backfill identity, separate API reader, Wasabi source read-only, and `IfNoneMatch: "*"` on derived writes.
+- Keep Task 1B's explicit approved bucket/region enrollment, literal slash-terminated prefixes, deliberate `--whole-bucket` selection and separate preflight credentials. Do not expand enrollment or production permissions.
+- Keep checkpoint/audit format/version/fingerprint compatibility, append-only durable intent then outcome order, directory sync, strict corruption detection, unknown-write fail-closed behavior, shared writer lock and private state. Local durable records and remote writes are not one atomic transaction.
 
-## Files and tests to focus on
+## Task 2A code and tests
 
-Inspect `src/thumbnail/preflight-scope.js`, `src/thumbnail/production-preflight.js`, `src/storage/thumbnail-preflight-wasabi.js`, `scripts/thumbnail-production-preflight.js`, `scripts/thumbnail-backfill-prd.js`, the error-handling segment of `src/thumbnail/production-backfill.js`, and focused tests under `test/thumbnail-production-preflight.test.js` and `test/thumbnail-production-backfill.test.js`.
+1. **First benchmark** synthetic audit histories; existing append revalidates the whole journal. If observed cost is unsafe for 250 examined objects, report evidence and stop instead of weakening journal validation or changing the format.
+2. If measurements support it, implement explicit v2-only `maxObjects` cap **250**, retaining v1 cap **10** and maximum listing page size **10**. Update *both* runner and CLI summary validation. Treat `examined` (not generated count) as the cap.
+3. Test multi-page processing, cap boundaries, honest completion, restart with the same state, invalid input, invalid/unknown audit, lock loss, unknown writes and sanitized output. Preserve all existing tests.
+4. Run local Node.js 24 `npm test`, targeted tests, `git diff --check`, and report relevant offline benchmark results. No live Wasabi operations, including metadata-only dry runs.
+5. This task does **not** introduce a campaign coordinator or multi-bucket execution loop; those are separately reviewed Task 2B changes.
 
-Cover valid/invalid opt-in folder and explicit root scopes, direct adapter bypass attempts, bucket-region exclusions, both config modes' credential reuse checks, unchanged legacy behavior and strict sanitized failure summaries. Run full regression and inspect the diff. Leave changes uncommitted for owner review.
+## Stop conditions
 
-## Stop and report
-
-Stop if the solution would change effective permissions, secret distribution, live storage calls, checkpoint/audit contents or ordering, retry semantics, production deployment, or Task 2 scope. Report the exact modified files, test results, limitations and anything needing architectural approval.
+Stop and report unexpected branch/worktree state, blocked tools, evidence that the performance goal cannot be reached safely, a required change to durability/fingerprints/state format or source permissions, or any need to deploy or access external systems. Do not broaden scope to make tests pass.

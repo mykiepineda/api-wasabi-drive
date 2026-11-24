@@ -77,3 +77,51 @@ test("backfill and preflight require one unambiguous root or prefix selector", (
     ...base, "--prefix", "photos/2026/", "--recipe", "v2",
   ]).prefix, "photos/2026/");
 });
+
+test("opt-in folder prefixes require slash termination and root requires whole-bucket", () => {
+  const loaded = loadPrdV2Enrollment(env);
+  const { validateOptInV2Prefix } = require("../src/thumbnail/preflight-scope");
+  for (const prefix of [
+    "photos",
+    "photos-old",
+    "/photos/",
+    "photos//",
+    "photos/../",
+    "photos/./",
+    " ",
+  ]) {
+    assert.throws(() => validateOptInV2Prefix(prefix, false));
+  }
+  assert.throws(() => validateOptInV2Prefix("photos/", true));
+  assert.throws(() => validateOptInV2Prefix("", false));
+  assert.doesNotThrow(() => validateOptInV2Prefix("", true));
+  assert.doesNotThrow(() => validateOptInV2Prefix("photos/2026/", false));
+
+  const scopeConfig = {
+    destinationBucket: derivedBucket,
+    destinationRegion: "ap-southeast-1",
+    prdV2: loaded,
+  };
+  const { validateScope } = require("../src/thumbnail/preflight-scope");
+  for (const options of [
+    { recipeId: "v2", sourceBucket: "synthetic-source", sourceRegion: "ap-southeast-2", prefix: "photos", wholeBucket: false },
+    { recipeId: "v2", sourceBucket: "synthetic-source", sourceRegion: "ap-southeast-2", prefix: "", wholeBucket: false },
+    { recipeId: "v2", sourceBucket: "synthetic-source", sourceRegion: "ap-southeast-2", prefix: "photos/", wholeBucket: true },
+  ]) {
+    assert.throws(() => validateScope(options, { ...scopeConfig, prdV2: loaded }));
+  }
+  assert.doesNotThrow(() => validateScope({
+    recipeId: "v2",
+    sourceBucket: "synthetic-source",
+    sourceRegion: "ap-southeast-2",
+    prefix: "photos/2026/",
+    wholeBucket: false,
+  }, { ...scopeConfig, prdV2: loaded }));
+  assert.doesNotThrow(() => validateScope({
+    recipeId: "v2",
+    sourceBucket: "synthetic-source",
+    sourceRegion: "ap-southeast-2",
+    prefix: "",
+    wholeBucket: true,
+  }, { ...scopeConfig, prdV2: loaded }));
+});

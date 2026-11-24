@@ -1,6 +1,6 @@
 const { ListObjectsV2Command, S3Client } = require("@aws-sdk/client-s3");
 const { endpointForRegion, SUPPORTED_WASABI_REGIONS } = require("./wasabi-regions");
-const { validatePrefix, validateSourceBucket } = require("../thumbnail/preflight-scope");
+const { validatePrefix, validateOptInV2Prefix, validateSourceBucket } = require("../thumbnail/preflight-scope");
 const { MAX_PREFLIGHT_PAGE_SIZE } = require("../thumbnail/policy");
 
 const createThumbnailPreflightStorage = ({
@@ -24,8 +24,21 @@ const createThumbnailPreflightStorage = ({
         || !sourceEnrollment.isEnrolled(bucket, region)
       )
     )
-    || (prefix !== "" && validatePrefix(prefix) !== prefix)
-    || (prefix === "" && wholeBucket !== true)
+    || (
+      sourceEnrollment !== undefined
+        ? (() => {
+          try {
+            validateOptInV2Prefix(prefix, wholeBucket);
+            return false;
+          } catch {
+            return true;
+          }
+        })()
+        : (
+          (prefix !== "" && validatePrefix(prefix) !== prefix)
+          || (prefix === "" && wholeBucket !== true)
+        )
+    )
     || typeof accessKeyId !== "string"
     || !accessKeyId.trim()
     || typeof secretAccessKey !== "string"

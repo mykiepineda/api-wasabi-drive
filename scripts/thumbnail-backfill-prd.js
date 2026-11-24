@@ -21,6 +21,24 @@ const SAFE_CODES = new Set([
   "state-complete",
   "empty-scope",
 ]);
+const STATE_FAILURE_CODES = new Set([
+  "invalid-checkpoint",
+  "checkpoint-scope-mismatch",
+  "checkpoint-cleanup-failed",
+  "checkpoint-durability-unknown",
+  "checkpoint-write-failed",
+  "invalid-audit-file",
+  "invalid-audit-boundary",
+  "invalid-audit-record",
+  "audit-write-failed",
+  "invalid-local-state-path",
+  "non-private-path",
+  "non-private-lock-directory",
+  "lock-already-held",
+  "lock-acquisition-failed",
+  "lock-cleanup-failed",
+  "lock-ownership-lost",
+]);
 const SUMMARY_COUNTS = [
   "examined",
   "generated",
@@ -49,8 +67,9 @@ const safeSummary = (result) => {
   };
 };
 
-const failureSummary = () => ({
+const failureSummary = (code) => ({
   category: "failed",
+  ...(SAFE_CODES.has(code) ? { code } : {}),
   examined: 0,
   generated: 0,
   alreadyPresent: 0,
@@ -58,6 +77,43 @@ const failureSummary = () => ({
   oversize: 0,
   failed: 1,
 });
+
+const classifyOuterFailure = (error) => {
+  const code = error?.code ?? error?.message;
+  if (
+    code === "invalid-arguments"
+    || code === "invalid-max-objects"
+    || code === "invalid-page-size"
+    || code === "directory-sync-unsupported"
+    || code === "dry-run-local-state-not-allowed"
+  ) return "configuration-rejected";
+  if (
+    code === "source-scope-mismatch"
+    || code === "invalid-prd-v2-source-enrollment"
+    || code === "invalid-prd-v2-migration"
+    || code === "invalid-prd-v2-derived-bucket"
+    || code === "invalid-production-backfill-scope"
+  ) return "scope-rejected";
+  if (
+    code === "invalid-production-backfill-configuration"
+    || code === "invalid-prd-v2-enrollment"
+    || code === "missing-preflight-configuration"
+    || code === "forbidden-credential-provider"
+    || code === "invalid-bucket"
+    || code === "invalid-prefix"
+    || code === "unsupported-thumbnail-recipe"
+    || code === "invalid-production-backfill-region"
+  ) return "configuration-rejected";
+  if (code === "provider-denied") return "provider-denied";
+  if (code === "provider-failure") return "provider-failure";
+  if (
+    code === "unknown-write-outcome"
+    || code === "ambiguous-write"
+    || code === "unresolved-write-intent"
+  ) return "unknown-write-outcome";
+  if (STATE_FAILURE_CODES.has(code)) return "invalid-state";
+  return undefined;
+};
 
 const main = async (
   args = process.argv.slice(2),
@@ -118,8 +174,8 @@ const main = async (
     const summary = safeSummary(result);
     write(JSON.stringify(summary));
     return summary.category === "failed" || summary.failed > 0 ? 1 : 0;
-  } catch {
-    write(JSON.stringify(failureSummary()));
+  } catch (error) {
+    write(JSON.stringify(failureSummary(classifyOuterFailure(error))));
     return 1;
   }
 };

@@ -898,9 +898,10 @@ const baseSummary = (dryRun) => ({
   failed: 0,
 });
 
-const failSummary = (summary) => {
+const failSummary = (summary, code) => {
   summary.category = "failed";
   summary.failed += 1;
+  if (code) summary.code = code;
   return summary;
 };
 
@@ -1165,8 +1166,31 @@ const runProductionBackfill = async ({
     if (summary.examined >= maxObjects && !completed && summary.category !== "paused-cap") {
       summary.category = "paused-cap";
     }
-  } catch {
-    failSummary(summary);
+  } catch (error) {
+    const code = error?.code ?? error?.message;
+    if (code === "provider-denied") {
+      failSummary(summary, "provider-denied");
+    } else if (["provider-failure", "precondition-unsupported", "etag-mismatch"].includes(code)) {
+      failSummary(summary, "provider-failure");
+    } else if (code === "ambiguous-write" || code === "unknown-write-outcome" || code === "unresolved-write-intent") {
+      failSummary(summary, "unknown-write-outcome");
+    } else if (
+      code === "invalid-checkpoint"
+      || code === "invalid-audit-file"
+      || code === "invalid-audit-record"
+      || code === "invalid-audit-boundary"
+      || code === "checkpoint-scope-mismatch"
+      || code === "lock-already-held"
+      || code === "lock-acquisition-failed"
+      || code === "lock-cleanup-failed"
+      || code === "lock-ownership-lost"
+      || code === "non-private-lock-directory"
+      || code === "invalid-local-state-path"
+    ) {
+      failSummary(summary, "invalid-state");
+    } else {
+      failSummary(summary);
+    }
   } finally {
     if (lock) {
       try {

@@ -5,6 +5,7 @@ const { evaluateThumbnailEligibility } = require("../thumbnail/eligibility");
 const { MAX_SOURCE_BYTES } = require("../thumbnail/policy");
 const { createThumbnailKey, normalizeEtag } = require("../thumbnail/key");
 const { createThumbnailApiWasabiStorage } = require("../storage/thumbnail-api-wasabi");
+const { isSourceEnrolled } = require("../thumbnail/source-enrollment");
 
 const getInternalBucketSet = () => config.wasabi.internalBucketSet;
 
@@ -41,11 +42,17 @@ const getThumbnailCandidateKey = (object, bucketName, bucketRegion, thumbnailCon
 };
 
 const getV2ThumbnailCandidateKey = (object, bucketName, bucketRegion, thumbnailConfig) => {
+  const optInEnrollment = thumbnailConfig.sourceEnrollments;
+  const legacyMatch = !optInEnrollment
+    && bucketName === thumbnailConfig.sourceBucket
+    && bucketRegion === thumbnailConfig.sourceRegion;
+  const optInMatch = optInEnrollment
+    && isSourceEnrolled(optInEnrollment, bucketName, bucketRegion);
+
   if (
-    bucketName !== thumbnailConfig.sourceBucket
-    || bucketRegion !== thumbnailConfig.sourceRegion
+    (!legacyMatch && !optInMatch)
     || typeof object?.Key !== "string"
-    || !object.Key.startsWith(thumbnailConfig.sourcePrefix)
+    || (legacyMatch && !object.Key.startsWith(thumbnailConfig.sourcePrefix))
     || object.Key.endsWith("/")
     || object.Size > MAX_SOURCE_BYTES
   ) {
@@ -123,7 +130,11 @@ const getListObjects = async (params) => {
   const isV1SourceBucket = thumbnailConfig.enabled
     && params.Bucket === thumbnailConfig.sourceBucket;
   const isV2SourceBucket = v2Config.enabled
-    && params.Bucket === v2Config.sourceBucket;
+    && (
+      (v2Config.sourceEnrollments
+        ? v2Config.sourceEnrollments.entries.some((entry) => entry.bucket === params.Bucket)
+        : params.Bucket === v2Config.sourceBucket)
+    );
   const isThumbnailSourceBucket = isV1SourceBucket || isV2SourceBucket;
   let sourceRegion;
   let regionLookupFailed = false;
@@ -145,7 +156,10 @@ const getListObjects = async (params) => {
       }
     }
 
-    if (isV2SourceBucket && sourceRegion === v2Config.sourceRegion) {
+    const v2RegionMatches = v2Config.sourceEnrollments
+      ? isSourceEnrolled(v2Config.sourceEnrollments, params.Bucket, sourceRegion)
+      : sourceRegion === v2Config.sourceRegion;
+    if (isV2SourceBucket && v2RegionMatches) {
       return getV2ThumbnailCandidateKey(object, params.Bucket, sourceRegion, v2Config);
     }
 

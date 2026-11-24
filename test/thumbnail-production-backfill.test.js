@@ -313,6 +313,89 @@ test("source allowlisting is byte-exact and CLI validates scope before creating 
   assert.equal(JSON.parse(incompleteExecution[0]).category, "failed");
 });
 
+test("backfill CLI classifies known failures and sanitizes unknown errors", async () => {
+  const sensitiveValues = [
+    "private-bucket",
+    "private/object.jpg",
+    "private-state-path",
+    "private-provider-detail",
+    "synthetic-secret",
+  ];
+  const assertFailure = async ({ args = cliArgs(), code, expectedCode, message }) => {
+    const output = [];
+    const exitCode = await main(args, {
+      env: configEnv(),
+      write: (line) => output.push(line),
+      createStorage: () => ({}),
+      runScan: async () => {
+        const error = new Error(message);
+        if (code) error.code = code;
+        throw error;
+      },
+    });
+    assert.equal(exitCode, 1);
+    const line = output[0];
+    const summary = JSON.parse(line);
+    assert.equal(summary.category, "failed");
+    if (expectedCode) assert.equal(summary.code, expectedCode);
+    else assert.equal(Object.hasOwn(summary, "code"), false);
+    for (const value of sensitiveValues) assert.equal(line.includes(value), false);
+  };
+
+  const invalidStateCodes = [
+    "invalid-checkpoint",
+    "invalid-audit-file",
+    "invalid-audit-record",
+    "invalid-local-state-path",
+    "non-private-path",
+    "lock-already-held",
+    "lock-acquisition-failed",
+    "lock-cleanup-failed",
+  ];
+  for (const code of invalidStateCodes) {
+    await assertFailure({
+      code,
+      expectedCode: "invalid-state",
+      message: `private-bucket private/object.jpg private-state-path ${code}`,
+    });
+  }
+  await assertFailure({
+    code: "provider-denied",
+    expectedCode: "provider-denied",
+    message: "private-provider-detail private-bucket",
+  });
+  await assertFailure({
+    code: "provider-failure",
+    expectedCode: "provider-failure",
+    message: "private-provider-detail",
+  });
+  await assertFailure({
+    code: "ambiguous-write",
+    expectedCode: "unknown-write-outcome",
+    message: "private-provider-detail private/object.jpg",
+  });
+
+  const configOutput = [];
+  assert.equal(await main([], {
+    env: configEnv(),
+    write: (line) => configOutput.push(line),
+  }), 1);
+  assert.equal(JSON.parse(configOutput[0]).code, "configuration-rejected");
+
+  const badScopeArgs = cliArgs();
+  badScopeArgs[1] = "another-approved-source";
+  const scopeOutput = [];
+  assert.equal(await main(badScopeArgs, {
+    env: configEnv(),
+    write: (line) => scopeOutput.push(line),
+  }), 1);
+  assert.equal(JSON.parse(scopeOutput[0]).code, "scope-rejected");
+
+  await assertFailure({
+    message: "private-provider-detail private-bucket private/object.jpg private-state-path synthetic-secret",
+  });
+});
+
 test("default CLI is dry-run and prints only a validated aggregate summary", async () => {
   const output = [];
   let storageCreated = false;

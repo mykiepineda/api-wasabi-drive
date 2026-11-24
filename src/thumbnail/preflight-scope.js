@@ -70,12 +70,14 @@ const validateDedicatedPreflightCredentials = (env, accessKeyId, secretAccessKey
     env.WASABI_ACCESS_KEY_ID,
     env.THUMBNAIL_TEST_WASABI_ACCESS_KEY_ID,
     env.THUMBNAIL_PRD_BACKFILL_WASABI_ACCESS_KEY_ID,
+    env.THUMBNAIL_API_READ_ACCESS_KEY_ID,
     env.AWS_ACCESS_KEY_ID,
   ];
   const otherSecretAccessKeys = [
     env.WASABI_SECRET_ACCESS_KEY,
     env.THUMBNAIL_TEST_WASABI_SECRET_ACCESS_KEY,
     env.THUMBNAIL_PRD_BACKFILL_WASABI_SECRET_ACCESS_KEY,
+    env.THUMBNAIL_API_READ_SECRET_ACCESS_KEY,
     env.AWS_SECRET_ACCESS_KEY,
   ];
   if (

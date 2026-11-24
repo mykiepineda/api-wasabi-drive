@@ -21,6 +21,24 @@ const SAFE_CODES = new Set([
   "state-complete",
   "empty-scope",
 ]);
+const STATE_FAILURE_CODES = new Set([
+  "invalid-checkpoint",
+  "checkpoint-scope-mismatch",
+  "checkpoint-cleanup-failed",
+  "checkpoint-durability-unknown",
+  "checkpoint-write-failed",
+  "invalid-audit-file",
+  "invalid-audit-boundary",
+  "invalid-audit-record",
+  "audit-write-failed",
+  "invalid-local-state-path",
+  "non-private-path",
+  "non-private-lock-directory",
+  "lock-already-held",
+  "lock-acquisition-failed",
+  "lock-cleanup-failed",
+  "lock-ownership-lost",
+]);
 const SUMMARY_COUNTS = [
   "examined",
   "generated",
@@ -83,11 +101,6 @@ const classifyOuterFailure = (error) => {
     || code === "forbidden-credential-provider"
     || code === "invalid-bucket"
     || code === "invalid-prefix"
-    || code === "invalid-checkpoint"
-    || code === "invalid-audit-file"
-    || code === "invalid-audit-record"
-    || code === "invalid-local-state-path"
-    || code === "non-private-path"
     || code === "unsupported-thumbnail-recipe"
     || code === "invalid-production-backfill-region"
   ) return "configuration-rejected";
@@ -98,17 +111,7 @@ const classifyOuterFailure = (error) => {
     || code === "ambiguous-write"
     || code === "unresolved-write-intent"
   ) return "unknown-write-outcome";
-  if (
-    typeof code === "string"
-    && (
-      code.includes("checkpoint")
-      || code.includes("audit")
-      || code.includes("lock")
-      || code.includes("state")
-      || code === "non-private-path"
-      || code === "invalid-local-state-path"
-    )
-  ) return "invalid-state";
+  if (STATE_FAILURE_CODES.has(code)) return "invalid-state";
   return undefined;
 };
 

@@ -14,6 +14,8 @@ const { validDerivedKey } = require("../storage/thumbnail-prd-backfill-wasabi");
 const { loadPrdV2Enrollment, validatePrdV2Scope } = require("./prd-v2-config");
 
 const MAX_OBJECTS = 10;
+const MAX_V2_OBJECTS = 250;
+const MAX_OBJECTS_BY_RECIPE = Object.freeze({ v1: MAX_OBJECTS, v2: MAX_V2_OBJECTS });
 const DEFAULT_PAGE_SIZE = 5;
 const CHECKPOINT_VERSION = 1;
 const V2_CHECKPOINT_VERSION = 2;
@@ -55,6 +57,11 @@ const isSafeValue = (value) =>
   && value.length > 0
   && value === value.trim()
   && !/[\u0000-\u001f\u007f]/.test(value);
+
+const maxObjectsForRecipe = (recipeId) =>
+  Object.hasOwn(MAX_OBJECTS_BY_RECIPE, recipeId)
+    ? MAX_OBJECTS_BY_RECIPE[recipeId]
+    : undefined;
 
 const validateBucket = (bucket) => {
   if (
@@ -964,6 +971,7 @@ const runProductionBackfill = async ({
   platform = process.platform,
   assertPrivatePathImpl = assertPrivatePath,
 }) => {
+  const recipeMaxObjects = maxObjectsForRecipe(recipeId);
   if (
     !scope
     || !SUPPORTED_WASABI_REGIONS.has(scope.sourceRegion)
@@ -984,9 +992,10 @@ const runProductionBackfill = async ({
       && (recipeId !== "v2" || scope.wholeBucket !== true)
     )
     || scope.sourceBucket === scope.destinationBucket
+    || recipeMaxObjects === undefined
     || !Number.isSafeInteger(maxObjects)
     || maxObjects < 1
-    || maxObjects > MAX_OBJECTS
+    || maxObjects > recipeMaxObjects
     || !Number.isSafeInteger(pageSize)
     || pageSize < 1
     || pageSize > 10
@@ -1216,12 +1225,15 @@ module.exports = {
   DEFAULT_PAGE_SIZE,
   LOCK_PATH,
   MAX_OBJECTS,
+  MAX_OBJECTS_BY_RECIPE,
+  MAX_V2_OBJECTS,
   acquireWriterLock,
   appendAuditRecord,
   buildCheckpoint,
   classifyObject,
   ensureOrderedProductionPage,
   loadProductionBackfillConfig,
+  maxObjectsForRecipe,
   parseArguments,
   parseAuditRecords,
   parseBoundedInteger,

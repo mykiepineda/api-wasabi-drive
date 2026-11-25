@@ -15,6 +15,7 @@ const { MAX_SOURCE_BYTES } = require("../src/thumbnail/policy");
 const { runProductionBackfill: runProductionBackfillImpl } = require("../src/thumbnail/production-backfill");
 const {
   loadProductionBackfillConfig,
+  maxObjectsForRecipe,
   parseArguments,
   validateSourceScope,
   validateStatePaths,
@@ -163,6 +164,30 @@ const storageFor = (pages) => {
         const page = pages.shift();
         if (page instanceof Error) throw page;
         return page;
+      },
+    },
+  };
+};
+const pagedStorageFor = (items) => {
+  const calls = [];
+  const examinedKeys = [];
+  return {
+    calls,
+    examinedKeys,
+    storage: {
+      async listSourcePage(params) {
+        calls.push(params);
+        const foundIndex = params.startAfter === undefined
+          ? 0
+          : items.findIndex((item) => item.Key > params.startAfter);
+        const startIndex = foundIndex === -1 ? items.length : foundIndex;
+        const remaining = items.slice(startIndex);
+        const contents = remaining.slice(0, params.maxKeys);
+        examinedKeys.push(...contents.map((item) => item.Key));
+        return {
+          Contents: contents,
+          IsTruncated: remaining.length > contents.length,
+        };
       },
     },
   };
@@ -460,6 +485,161 @@ test("default CLI is dry-run and prints only a validated aggregate summary", asy
     oversize: 0,
     failed: 0,
   });
+});
+
+test("production CLI enforces recipe-specific limits before creating storage", async () => {
+  assert.equal(maxObjectsForRecipe("v1"), 10);
+  assert.equal(maxObjectsForRecipe("v2"), 250);
+  assert.equal(maxObjectsForRecipe("unknown"), undefined);
+
+  for (const [recipeId, limit] of [["v1", 10], ["v2", 250]]) {
+    const args = cliArgs(["--recipe", recipeId]);
+    args[7] = String(limit);
+    let scanOptions;
+    const exitCode = await main(args, {
+      env: configEnv(),
+      write: () => {},
+      runScan: async (options) => {
+        scanOptions = options;
+        return {
+          category: "dry-run",
+          examined: 0,
+          generated: 0,
+          alreadyPresent: 0,
+          unsupported: 0,
+          oversize: 0,
+          failed: 0,
+        };
+      },
+    });
+    assert.equal(exitCode, 0);
+    assert.equal(scanOptions.maxObjects, limit);
+    assert.equal(scanOptions.recipeId, recipeId);
+  }
+
+  const invalidCases = [
+    { recipeId: "v1", value: "11" },
+    { recipeId: "v2", value: "251" },
+    ...["0", "-1", "1.5", "abc", "9007199254740992"].map((value) => ({
+      recipeId: "v2",
+      value,
+    })),
+    { recipeId: "v2", value: undefined },
+  ];
+  for (const { recipeId, value } of invalidCases) {
+    const args = cliArgs(["--recipe", recipeId]);
+    if (value === undefined) args.splice(6, 2);
+    else args[7] = value;
+    let storageCreated = false;
+    let scanCalled = false;
+    const output = [];
+    assert.equal(await main(args, {
+      env: configEnv(),
+      write: (line) => output.push(line),
+      createStorage: () => {
+        storageCreated = true;
+        return {};
+      },
+      runScan: async () => {
+        scanCalled = true;
+        return {};
+      },
+    }), 1);
+    assert.equal(storageCreated, false, `storage created for ${recipeId} max ${value}`);
+    assert.equal(scanCalled, false, `scan called for ${recipeId} max ${value}`);
+    assert.equal(JSON.parse(output[0]).category, "failed");
+  }
+});
+
+test("CLI accepts bounded v2 aggregates and sanitizes summaries above either limit", async () => {
+  const output = [];
+  const args = cliArgs(["--recipe", "v2"]);
+  args[7] = "250";
+  const exitCode = await main(args, {
+    env: configEnv(),
+    write: (line) => output.push(line),
+    runScan: async () => ({
+      category: "completed",
+      examined: 250,
+      generated: 120,
+      alreadyPresent: 70,
+      unsupported: 40,
+      oversize: 20,
+      failed: 0,
+      sourceKey: "private/source-name.jpg",
+      bucket: "private-bucket",
+      secret: "synthetic-secret",
+      providerMessage: "private provider failure",
+    }),
+  });
+  assert.equal(exitCode, 0);
+  assert.deepEqual(JSON.parse(output[0]), {
+    category: "completed",
+    examined: 250,
+    generated: 120,
+    alreadyPresent: 70,
+    unsupported: 40,
+    oversize: 20,
+    failed: 0,
+  });
+
+  const invalidResults = [
+    { recipeId: "v1", requested: 10, examined: 11 },
+    { recipeId: "v2", requested: 250, examined: 251 },
+    { recipeId: "v2", requested: 249, examined: 250 },
+  ];
+  for (const { recipeId, requested, examined } of invalidResults) {
+    const invalidArgs = cliArgs(["--recipe", recipeId]);
+    invalidArgs[7] = String(requested);
+    const invalidOutput = [];
+    assert.equal(await main(invalidArgs, {
+      env: configEnv(),
+      write: (line) => invalidOutput.push(line),
+      runScan: async () => ({
+        category: "completed",
+        examined,
+        generated: examined,
+        alreadyPresent: 0,
+        unsupported: 0,
+        oversize: 0,
+        failed: 0,
+        sourceKey: "private/source-name.jpg",
+        bucket: "private-bucket",
+        secret: "synthetic-secret",
+        providerMessage: "private provider failure",
+      }),
+    }), 1);
+    const sanitized = JSON.parse(invalidOutput[0]);
+    assert.equal(sanitized.category, "failed");
+    assert.equal(sanitized.examined, 0);
+    for (const privateValue of [
+      "private/source-name.jpg",
+      "private-bucket",
+      "synthetic-secret",
+      "private provider failure",
+    ]) {
+      assert.equal(invalidOutput[0].includes(privateValue), false);
+    }
+  }
+
+  assert.equal(safeSummary({
+    category: "completed",
+    examined: 250,
+    generated: 250,
+    alreadyPresent: 0,
+    unsupported: 0,
+    oversize: 0,
+    failed: 0,
+  }).category, "failed");
+  assert.equal(safeSummary({
+    category: "completed",
+    examined: 250,
+    generated: 250,
+    alreadyPresent: 0,
+    unsupported: 0,
+    oversize: 0,
+    failed: 0,
+  }, { recipeId: "v2", maxObjects: 250 }).category, "completed");
 });
 
 test("explicit v2 selection reaches the existing storage and generator layers in dry-run", async () => {
@@ -1655,6 +1835,260 @@ test("one- and two-object caps stay bounded and report truncation honestly", asy
       maxObjects,
     }));
   }
+});
+
+test("v2 scans enforce the 250-object cap across ten-key-bounded pages and distinguish completion", async () => {
+  const items = Array.from({ length: 252 }, (_, index) => {
+    const name = `${scope.prefix}${String(index).padStart(3, "0")}`;
+    if (index % 4 === 1) return makeItem(`${name}.txt`);
+    if (index % 4 === 2) {
+      return makeItem(`${name}.jpg`, { Size: MAX_SOURCE_BYTES + 1 });
+    }
+    if (index % 4 === 3) return makeItem(`${name}.jpg`, { Size: 0 });
+    return makeItem(`${name}.jpg`);
+  });
+  const listing = pagedStorageFor(items);
+  const summary = await runProductionBackfill({
+    scope,
+    storage: listing.storage,
+    maxObjects: 250,
+    pageSize: 9,
+    recipeId: "v2",
+    generate: async () => ({ category: "already-present", count: 1 }),
+  });
+
+  assert.equal(summary.category, "paused-cap");
+  assert.equal(summary.examined, 250);
+  assert.equal(summary.generated, 0);
+  assert.equal(summary.alreadyPresent, 63);
+  assert.equal(summary.unsupported, 125);
+  assert.equal(summary.oversize, 62);
+  assert.equal(listing.examinedKeys.length, 250);
+  let remainingBudget = 250;
+  for (const call of listing.calls) {
+    assert.ok(call.maxKeys <= 10);
+    assert.equal(call.maxKeys, Math.min(9, remainingBudget));
+    remainingBudget -= call.maxKeys;
+  }
+  assert.equal(remainingBudget, 0);
+  assert.equal(listing.calls.at(-1).maxKeys, 7);
+
+  const exactEnd = pagedStorageFor(items.slice(0, 250));
+  const exactSummary = await runProductionBackfill({
+    scope,
+    storage: exactEnd.storage,
+    maxObjects: 250,
+    pageSize: 10,
+    recipeId: "v2",
+    generate: async () => ({ category: "already-present", count: 1 }),
+  });
+  assert.equal(exactSummary.category, "dry-run");
+  assert.equal(exactSummary.examined, 250);
+  assert.equal(exactSummary.generated, 0);
+  assert.equal(exactEnd.calls.length, 25);
+  assert.equal(exactEnd.calls.at(-1).maxKeys, 10);
+  assert.equal(exactEnd.calls.at(-1).startAfter, items[239].Key);
+
+  for (const [recipeId, maxObjects] of [["v1", 11], ["v2", 251]]) {
+    let listCalls = 0;
+    await assert.rejects(runProductionBackfill({
+      scope,
+      storage: {
+        async listSourcePage() {
+          listCalls += 1;
+          return { Contents: [], IsTruncated: false };
+        },
+      },
+      maxObjects,
+      recipeId,
+    }));
+    assert.equal(listCalls, 0);
+  }
+});
+
+test("v2 bounded live run durably resumes without reprocessing or resetting audit history", async () => {
+  const paths = statePaths();
+  const v2Paths = recipeStatePaths({ recipeId: "v2", ...paths });
+  const items = Array.from({ length: 251 }, (_, index) =>
+    makeItem(`${scope.prefix}${String(index).padStart(3, "0")}.jpg`));
+  const firstListing = pagedStorageFor(items);
+  const first = await runProductionBackfill({
+    scope,
+    storage: firstListing.storage,
+    maxObjects: 250,
+    pageSize: 10,
+    dryRun: false,
+    recipeId: "v2",
+    ...paths,
+    generate: async (params) => generatedFor(params),
+  });
+
+  assert.equal(first.category, "paused-cap");
+  assert.equal(first.examined, 250);
+  assert.equal(first.generated, 250);
+  assert.equal(firstListing.examinedKeys.length, 250);
+  assert.deepEqual(JSON.parse(fs.readFileSync(v2Paths.checkpointPath, "utf8")), {
+    version: 2,
+    recipeId: "v2",
+    scope,
+    lastCompletedKey: items[249].Key,
+  });
+  const firstAudit = fs.readFileSync(v2Paths.auditPath);
+  const firstRecords = firstAudit.toString("utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(firstRecords.length, 500);
+  for (let index = 0; index < 250; index += 1) {
+    const intent = firstRecords[index * 2];
+    const outcome = firstRecords[index * 2 + 1];
+    assert.equal(intent.type, "write-intent");
+    assert.equal(outcome.type, "write-outcome");
+    assert.equal(intent.recipeId, "v2");
+    assert.equal(intent.eventId, outcome.eventId);
+    assert.equal(intent.derivedKey, outcome.derivedKey);
+    assert.equal(outcome.outcome, "generated");
+  }
+
+  const secondListing = pagedStorageFor(items);
+  const second = await runProductionBackfill({
+    scope,
+    storage: secondListing.storage,
+    maxObjects: 250,
+    pageSize: 10,
+    dryRun: false,
+    recipeId: "v2",
+    ...paths,
+    generate: async (params) => generatedFor(params),
+  });
+  assert.equal(second.category, "completed");
+  assert.equal(second.examined, 1);
+  assert.equal(second.generated, 1);
+  assert.equal(secondListing.calls[0].startAfter, items[249].Key);
+  assert.deepEqual(secondListing.examinedKeys, [items[250].Key]);
+  assert.deepEqual(
+    fs.readFileSync(v2Paths.auditPath).subarray(0, firstAudit.length),
+    firstAudit,
+  );
+  assert.equal(fs.readFileSync(v2Paths.auditPath, "utf8").trim().split("\n").length, 502);
+  assert.equal(
+    JSON.parse(fs.readFileSync(v2Paths.checkpointPath, "utf8")).lastCompletedKey,
+    items[250].Key,
+  );
+});
+
+test("v2 resumes after a controlled interruption and does not advance the unsettled key", async () => {
+  const paths = statePaths();
+  const v2Paths = recipeStatePaths({ recipeId: "v2", ...paths });
+  const items = Array.from({ length: 3 }, (_, index) =>
+    makeItem(`${scope.prefix}${String(index).padStart(3, "0")}.jpg`));
+  const interruptedListing = pagedStorageFor(items);
+  let generatedCount = 0;
+  const interrupted = await runProductionBackfill({
+    scope,
+    storage: interruptedListing.storage,
+    maxObjects: 3,
+    pageSize: 2,
+    dryRun: false,
+    recipeId: "v2",
+    ...paths,
+    generate: async (params) => {
+      generatedCount += 1;
+      if (generatedCount === 2) throw new Error("synthetic interruption");
+      return generatedFor(params);
+    },
+  });
+  assert.equal(interrupted.category, "failed");
+  assert.equal(interrupted.examined, 2);
+  assert.equal(
+    JSON.parse(fs.readFileSync(v2Paths.checkpointPath, "utf8")).lastCompletedKey,
+    items[0].Key,
+  );
+
+  const resumedListing = pagedStorageFor(items);
+  const resumed = await runProductionBackfill({
+    scope,
+    storage: resumedListing.storage,
+    maxObjects: 3,
+    pageSize: 2,
+    dryRun: false,
+    recipeId: "v2",
+    ...paths,
+    generate: async () => ({ category: "already-present", count: 1 }),
+  });
+  assert.equal(resumed.category, "completed");
+  assert.equal(resumed.examined, 2);
+  assert.equal(resumed.alreadyPresent, 2);
+  assert.equal(resumedListing.calls[0].startAfter, items[0].Key);
+  assert.deepEqual(resumedListing.examinedKeys, [items[1].Key, items[2].Key]);
+  assert.equal(fs.readFileSync(v2Paths.auditPath, "utf8").trim().split("\n").length, 2);
+});
+
+test("v2 refuses corrupted state and unresolved or unknown write outcomes before listing", async () => {
+  for (const stateType of ["checkpoint", "audit"]) {
+    const paths = statePaths();
+    const v2Paths = recipeStatePaths({ recipeId: "v2", ...paths });
+    const statePath = stateType === "checkpoint"
+      ? v2Paths.checkpointPath
+      : v2Paths.auditPath;
+    fs.writeFileSync(statePath, "{}\n", { mode: 0o600 });
+    let listed = false;
+    const result = await runProductionBackfill({
+      scope,
+      storage: {
+        async listSourcePage() {
+          listed = true;
+          return { Contents: [], IsTruncated: false };
+        },
+      },
+      maxObjects: 1,
+      dryRun: false,
+      recipeId: "v2",
+      ...paths,
+    });
+    assert.equal(result.category, "failed");
+    assert.equal(listed, false);
+  }
+
+  const paths = statePaths();
+  const v2Paths = recipeStatePaths({ recipeId: "v2", ...paths });
+  appendAuditForTests(v2Paths.auditPath, {
+    version: 3,
+    recipeId: "v2",
+    scopeId: processingFingerprint(scope, "v2"),
+    timestamp: new Date().toISOString(),
+    type: "write-intent",
+    eventId: crypto.randomUUID().replaceAll("-", ""),
+    derivedKey: generatedV2Key,
+  });
+  let listCalls = 0;
+  const storage = {
+    async listSourcePage() {
+      listCalls += 1;
+      return { Contents: [], IsTruncated: false };
+    },
+  };
+  const unresolved = await runProductionBackfill({
+    scope,
+    storage,
+    maxObjects: 1,
+    dryRun: false,
+    recipeId: "v2",
+    ...paths,
+  });
+  assert.equal(unresolved.category, "failed");
+  assert.equal(unresolved.code, "unknown-write-outcome");
+  assert.equal(listCalls, 0);
+
+  const unknown = await runProductionBackfill({
+    scope,
+    storage,
+    maxObjects: 1,
+    dryRun: false,
+    recipeId: "v2",
+    ...paths,
+  });
+  assert.equal(unknown.category, "failed");
+  assert.equal(unknown.code, "unknown-write-outcome");
+  assert.equal(listCalls, 0);
+  assert.equal(fs.readFileSync(v2Paths.auditPath, "utf8").trim().split("\n").length, 2);
 });
 
 test("runner rejects Sydney for v1 and resumes approved Sydney v2 state with region-bound identity", async () => {

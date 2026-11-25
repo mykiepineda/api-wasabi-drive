@@ -364,3 +364,5 @@ npm run thumbnail:pilot -- --source-bucket <test-source-bucket> --source-key <fu
 The pilot checks the deterministic destination key before any source-body download, rejects known oversized objects, and enforces a 25 MiB source stream limit. Source GetObject uses `IfMatch` and checks the returned ETag and size; derived PutObject uses `IfNoneMatch: "*"`. It never falls back to unconditional reads or writes. The owner validated conditional source reads in Sydney and conditional derived creation in Singapore for the B1 TEST pilot. Wasabi's fix rollout remains region-specific as noted above; verify the exact TEST destination before any additional live use.
 
 B1 does not authorize production writes or a backfill, and adds no SNS processing, Lambda worker, API/frontend changes, or cloud resources.
+
+The production backfill requires an explicit --max-objects value. Recipe v1, including the default recipe, permits 1–10 examined objects per invocation. Explicit --recipe v2 permits 1–250. Source listing requests remain limited to 10 objects each, with a default page size of 5. A higher invocation limit does not authorize production execution.

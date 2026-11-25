@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const {
   loadProductionBackfillConfig,
+  maxObjectsForRecipe,
   parseArguments,
   parseBoundedInteger,
   recipeStatePaths,
@@ -48,7 +49,12 @@ const SUMMARY_COUNTS = [
   "failed",
 ];
 
-const safeSummary = (result) => {
+const safeSummary = (result, { recipeId = "v1", maxObjects = 10 } = {}) => {
+  const recipeMaxObjects = maxObjectsForRecipe(recipeId);
+  const validLimit = recipeMaxObjects !== undefined
+    && Number.isSafeInteger(maxObjects)
+    && maxObjects >= 1
+    && maxObjects <= recipeMaxObjects;
   const validCounts = result
     && typeof result === "object"
     && SUMMARY_COUNTS.every((key) => Number.isSafeInteger(result[key]) && result[key] >= 0);
@@ -56,7 +62,9 @@ const safeSummary = (result) => {
     ? result.generated + result.alreadyPresent + result.unsupported + result.oversize
     : Number.POSITIVE_INFINITY;
   const valid = validCounts
-    && result.examined <= 10
+    && validLimit
+    && result.examined <= maxObjects
+    && result.examined <= recipeMaxObjects
     && terminalCount <= result.examined
     && result.failed <= result.examined + 1
     && SAFE_CATEGORIES.has(result.category);
@@ -129,7 +137,12 @@ const main = async (
     const options = parseArguments(args);
     const config = loadProductionBackfillConfig(env, options.recipeId);
     validateSourceScope(options, config, options.recipeId);
-    const maxObjects = parseBoundedInteger(options.maxObjects, 1, 10, "invalid-max-objects");
+    const maxObjects = parseBoundedInteger(
+      options.maxObjects,
+      1,
+      maxObjectsForRecipe(options.recipeId),
+      "invalid-max-objects",
+    );
     const pageSize = options.pageSize === undefined
       ? 5
       : parseBoundedInteger(options.pageSize, 1, 10, "invalid-page-size");
@@ -171,7 +184,7 @@ const main = async (
       recipeId: options.recipeId,
       platform,
     });
-    const summary = safeSummary(result);
+    const summary = safeSummary(result, { recipeId: options.recipeId, maxObjects });
     write(JSON.stringify(summary));
     return summary.category === "failed" || summary.failed > 0 ? 1 : 0;
   } catch (error) {

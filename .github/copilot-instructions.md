@@ -1,34 +1,36 @@
-# Wasabi Drive backend — Copilot instructions (Phase 8D-D Task 2A.1)
+# Wasabi Drive backend - Copilot instructions (Phase 8D-D Task 2A.2)
 
-## Authority and project boundaries
+## Authority and engineering boundaries
 
-The owner is the architectural/security decision-maker. ChatGPT performs independent analysis and review; Copilot implements only the owner-approved task. Read and follow repository `AGENTS.md` first. It remains the general engineering and security authority. Preserve the current backend stack (Node.js 24, Express 4, CommonJS, AWS Lambda/API Gateway REST, Serverless Framework, Wasabi S3-compatible storage), stage isolation and HTTP/CLI -> service -> storage structure. No unrelated improvements, frameworks or cloud services.
+The owner is the architectural and security decision-maker. Follow `AGENTS.md` as the general repository authority, and use this file for the current task. Keep the existing Node.js 24, Express 4, CommonJS, AWS Lambda/API Gateway REST, Serverless Framework and Wasabi S3-compatible storage design. Preserve the HTTP/CLI -> service -> storage separation. Avoid unrelated cleanup, new services, new dependencies and redesigns.
 
-**Active Task 2A.1:** local-only, synthetic audit parser scalability investigation. The previous 250-object benchmark exposed substantial cost, so the v2 cap remains 10. The newly approved scope is a minimal equivalent parser optimization and regression/benchmark evidence; raising caps and campaign coordination are NOT authorized. Use `Task-2A-Audit-Parser-Scalability-Copilot-Agent-Prompt.md`.
+**Current task:** Phase 8D-D Task 2A.2, a local-only increase of the production backfill **v2 examined-object cap from 10 to 250 per invocation**, with v1 remaining at 10 and source-listing pages remaining at at most 10. Task 2A.1's optimized audit parser is already approved, merged and TEST-validated. This task is NOT the automatic campaign coordinator (Task 2B).
 
-## Git and Agent operating mode
+## Git and coding-agent operation
 
-- Owner creates `feature/v2-backfill-bounded-batches` from up-to-date `master` before giving the prompt to the Agent. Verify branch and worktree read-only before editing; stop if unexpected. NEVER work on `master`.
-- In VS Code, use **Interactive + Assisted** permissions. The Agent may read ordinary repository source, make approved local edits and run local synthetic tests. Ask approval for installing dependencies; do not bypass any tool-denied effect. Keep terminal permissions specific rather than `Allow All`.
-- The Agent must NOT commit, push, merge, create a PR, deploy, change credentials/policies, execute a live backfill, call Wasabi/AWS, run live integration tests, mount production state, or alter Docker production volumes. Do not expose secrets or private filenames.
-- Owner manually commits/pushes feature changes, creates a Draft PR and transfers feature-branch ZIP and test summary to ChatGPT for independent review. Merge only after review/required PR checks; protect `master`.
+- The owner creates `feature/v2-backfill-v2-250-cap` from current `origin/master`. Before editing, inspect branch, worktree, HEAD, and relevant code. Never work on `master`. Treat only the owner's intentional instructions-file change as expected; do not overwrite any unexpected uncommitted work.
+- Use VS Code **Interactive + Assisted** permissions. The agent may inspect repository files, edit only in-scope code/docs/tests, run offline Node.js tests and synthetic benchmarks. Ask for ordinary tool approvals in VS Code; respect denials and do not bypass tool restrictions.
+- The agent must NOT commit, push, merge, open PRs, deploy, change credentials or policies, contact AWS/Wasabi, execute a live backfill/integration test, mount or alter any production Docker volume, or modify historical Sydney checkpoint/audit files.
+- The owner manually commits/pushes the feature branch, creates a Draft PR, and transfers the branch ZIP with test results for independent ChatGPT review. Merge only after review and required GitHub PR checks; `master` is protected.
 
-## Immutable data, recipe and security contracts
+## Non-negotiable storage and state safeguards
 
-- Preserve completed Sydney v2 collection and legacy Tokyo v1 pilot; do not reprocess them.
-- v2 recipe remains WebP 200×190 center-crop, quality 80, metadata stripped, no enlargement; source eligibility and 25 MiB limit unchanged.
-- Keep v1 precedence where applicable, deterministic keys and ETag binding; fixed private derived bucket and namespace, dedicated least-privilege backfill identity, separate API reader, Wasabi source read-only, and `IfNoneMatch: "*"` on derived writes.
-- Keep Task 1B's explicit approved bucket/region enrollment, literal slash-terminated prefixes, deliberate `--whole-bucket` selection and separate preflight credentials. Do not expand enrollment or production permissions.
-- Keep checkpoint/audit format/version/fingerprint compatibility, append-only durable intent then outcome order, directory sync, strict corruption detection, unknown-write fail-closed behavior, shared writer lock and private state. Local durable records and remote writes are not one atomic transaction.
+- Preserve Sydney v2 completion and the legacy Tokyo v1 pilot; no source or derived object mutation in this task.
+- Keep v2 WebP 200 x 190 center crop, quality 80, metadata stripped, no enlargement, source eligibility and 25 MiB source-size limit; v1 recipe, key format and v1-first URL precedence remain unchanged.
+- Retain exact approved source bucket/region enrollment, protected bucket exclusions, literal slash-terminated prefixes, explicit `--whole-bucket` for root selection, fixed derived destination, separate dedicated credentials and source read-only behavior.
+- Retain ETag-bound deterministic derived keys, `IfNoneMatch: "*"` conditional writes, existence checks and no-overwrite behavior.
+- Keep checkpoint/audit versions, processing fingerprints and filenames compatible; append-only write intent then outcome, per-record `fsync`, directory sync, corruption detection, unknown outcome fail-closed behavior, private state validation and shared writer lock unchanged.
+- Do not treat a completed lexical checkpoint as a full synchronization of future uploads. Do not change scan resumption semantics or add Task 2B continuation.
 
-## Task 2A.1 code and tests
+## Task 2A.2 precise change boundaries
 
-1. Inspect existing synthetic benchmark and expensive repeated `Map` scans in `parseAuditRecords`. Keep `appendAuditRecord` validating the complete existing journal before each append, with per-record `fsync` and all path/inode/lock protections.
-2. If possible, implement only an equivalent linear-pass audit parser improvement; preserve all existing v1/v2 accepted and rejected records, including unknown/pending-intent fail-closed cases, journal boundaries, versions and corruption detection.
-3. Add focused synthetic tests for journal semantics and compatibility. Rebenchmark with repeated comparable runs; report host filesystem limitations. Do not weaken tests or claim guaranteed performance based on one local trial.
-4. **Do not raise either recipe cap** or change the ten-object listing-page limit. The cap decision will follow independent review of evidence.
-5. Run local Node.js 24 `npm test`, focused tests, `node --check`, `git diff --check`, and report files, results and outstanding risks. No live Wasabi operations or production state volume.
+1. Inspect `src/thumbnail/production-backfill.js` and `scripts/thumbnail-backfill-prd.js` for all bounds, including the CLI `safeSummary`. Make recipe-aware caps consistent: v1 max 10 (including the default recipe), v2 max 250. Prefer one small shared source of truth; do not add environment configuration or a generic limits framework.
+2. Preserve the default listing page size of 5 and the storage adapter's hard maximum of 10 keys per listing request. The runner must never ask for more than the smaller of page size or remaining examined-object allowance.
+3. Keep `--max-objects` mandatory, integer, bounded and deliberately operator-selected. Preserve existing CLI confirmations and summary field allowlist. A valid 250-object v2 summary must not be rejected as unsafe; invalid, excessive or contradictory summaries must still fail closed without private identifiers.
+4. Add focused offline tests for v1=10/v2=250 boundaries, 251 rejection, validation before storage calls, multi-page progression, cap-paused vs completed, cursor resumption, mixed eligible/ineligible/already-present results, corrupt/unknown state and nonzero sanitized failures. Keep tests and status semantics truthful. Do not weaken existing tests.
+5. Update ONLY the relevant README/backfill runbook limit descriptions; do not change the actual PRD permissions worksheet, deployment wiring or preflight limits (the latter intentionally have different bounds).
+6. Run Node.js 24 focused tests, `npm test`, `node --check` of changed JavaScript, `git diff --check`, and the existing offline synthetic audit benchmark. Summarize results and remaining Docker-volume performance limitation.
 
-## Stop conditions
+## Stop and escalation conditions
 
-Stop and report unexpected branch/worktree state, blocked tools, evidence that equivalence or durability cannot be preserved, a required change to fingerprints/state formats or source permissions, or any need to deploy or access external systems. Do not broaden scope to make tests pass.
+Stop if branch/worktree status is unexpected, any security or durability invariant cannot be preserved, a state format or fingerprint migration becomes necessary, there is a requirement to access production state or cloud services, or tool permission is denied. Report the precise blocker without inventing a workaround. No production usage of the 250 limit is approved by this coding task.

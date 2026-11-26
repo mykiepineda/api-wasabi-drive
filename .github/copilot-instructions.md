@@ -1,36 +1,31 @@
-# Wasabi Drive backend - Copilot instructions (Phase 8D-D Task 2A.2)
+# Wasabi Drive backend — GitHub Copilot instructions (Phase 8D-D Task 2B)
 
-## Authority and engineering boundaries
+## Authority and baseline
 
-The owner is the architectural and security decision-maker. Follow `AGENTS.md` as the general repository authority, and use this file for the current task. Keep the existing Node.js 24, Express 4, CommonJS, AWS Lambda/API Gateway REST, Serverless Framework and Wasabi S3-compatible storage design. Preserve the HTTP/CLI -> service -> storage separation. Avoid unrelated cleanup, new services, new dependencies and redesigns.
+Follow `AGENTS.md` first. The owner controls architecture, permissions, Git integration and production operations. Preserve Node.js 24, CommonJS, the existing Express/Lambda/Serverless deployment, Wasabi S3-compatible storage, and route/service/storage boundaries. Prefer the smallest incremental change over new infrastructure or abstractions. The authoritative source is the owner's current locally checked-out, protected-`master`-derived feature branch; the last externally reviewed Task 2A.2 ZIP predates its README update and merge.
 
-**Current task:** Phase 8D-D Task 2A.2, a local-only increase of the production backfill **v2 examined-object cap from 10 to 250 per invocation**, with v1 remaining at 10 and source-listing pages remaining at at most 10. Task 2A.1's optimized audit parser is already approved, merged and TEST-validated. This task is NOT the automatic campaign coordinator (Task 2B).
+**Current task:** Task 2B — one local, explicitly approved v2 backfill campaign, sequential 1–250-object invocations, operator stop/resume, independent private job state and strict failure/no-progress gates. Task 2A.2's v2 cap is already merged and TEST-validated. Do **not** implement the follow-on cloud-based Automated Thumbnail Lifecycle in this branch.
 
-## Git and coding-agent operation
+## Branch and coding agent
 
-- The owner creates `feature/v2-backfill-v2-250-cap` from current `origin/master`. Before editing, inspect branch, worktree, HEAD, and relevant code. Never work on `master`. Treat only the owner's intentional instructions-file change as expected; do not overwrite any unexpected uncommitted work.
-- Use VS Code **Interactive + Assisted** permissions. The agent may inspect repository files, edit only in-scope code/docs/tests, run offline Node.js tests and synthetic benchmarks. Ask for ordinary tool approvals in VS Code; respect denials and do not bypass tool restrictions.
-- The agent must NOT commit, push, merge, open PRs, deploy, change credentials or policies, contact AWS/Wasabi, execute a live backfill/integration test, mount or alter any production Docker volume, or modify historical Sydney checkpoint/audit files.
-- The owner manually commits/pushes the feature branch, creates a Draft PR, and transfers the branch ZIP with test results for independent ChatGPT review. Merge only after review and required GitHub PR checks; `master` is protected.
+- Work only on `feature/v2-backfill-campaign-continuation`, created by the owner from the updated `origin/master`. Check current branch, HEAD, ancestry and worktree before editing; protect unrelated existing changes. Never edit `master`.
+- Use VS Code Copilot **Interactive + Assisted**. Approve local file edits and offline tests as necessary; respect denied tool calls. Do not auto-approve broad terminal, Docker or cloud tools.
+- Agent may edit only narrowly relevant CLI, coordinator, shared backfill state handling, tests and documentation. Do not commit, push, create PRs, merge, deploy, run integration tests, contact AWS/Wasabi or access real Docker production state. Owner manually exports feature-branch ZIP for ChatGPT review.
 
-## Non-negotiable storage and state safeguards
+## Invariants that must survive
 
-- Preserve Sydney v2 completion and the legacy Tokyo v1 pilot; no source or derived object mutation in this task.
-- Keep v2 WebP 200 x 190 center crop, quality 80, metadata stripped, no enlargement, source eligibility and 25 MiB source-size limit; v1 recipe, key format and v1-first URL precedence remain unchanged.
-- Retain exact approved source bucket/region enrollment, protected bucket exclusions, literal slash-terminated prefixes, explicit `--whole-bucket` for root selection, fixed derived destination, separate dedicated credentials and source read-only behavior.
-- Retain ETag-bound deterministic derived keys, `IfNoneMatch: "*"` conditional writes, existence checks and no-overwrite behavior.
-- Keep checkpoint/audit versions, processing fingerprints and filenames compatible; append-only write intent then outcome, per-record `fsync`, directory sync, corruption detection, unknown outcome fail-closed behavior, private state validation and shared writer lock unchanged.
-- Do not treat a completed lexical checkpoint as a full synchronization of future uploads. Do not change scan resumption semantics or add Task 2B continuation.
+- **Gate 0:** Test real CLI-shaped v2 checkpoint creation and resume with runtime-only scope fields. The existing checkpoint reader expects an exact five-field persisted scope; correct any verified serialization mismatch without changing v1/v2 format versions, fingerprints or old checkpoint compatibility. Stop if a migration is needed.
+- v1 cap stays 10 and its recipe/serving remain unchanged; v2 cap stays 250, listing-page cap stays 10 and default is 5. No unbounded batch or parallel workers.
+- Strict PRD source enrollment by exact `{bucket, region}`, protected bucket exclusions, explicit prefix or `wholeBucket: true`, fixed private derived destination, and separate dedicated credentials. The campaign plan is an operator-selected job schedule, **not** a new permission authority.
+- Preserve ETag-bound v2 deterministic WebP keys, 200 x 190 centre crop, quality 80, source size/eligibility checks, read-only source access, separate API thumbnail-read identity, derived existence checks and `IfNoneMatch: "*"` writes.
+- Preserve append-only intent/outcome audit, private path validation, per-record `fsync`, checkpoint file/directory sync, unknown-write fail-closed handling, shared persistent writer lock on `/state`, and exact stage/recipe/job state isolation. Do not rewrite/delete existing Sydney checkpoints or audits.
+- Distinguish `paused-cap` from true `completed`; validate cursor advancement on every continued slice. Stop on any failure or ambiguous outcome, invalid state, lock contention/loss, backup failure, no progress or finite budget exhaustion. Never bypass errors by creating new checkpoints.
+- A resumed lexical cursor is **not** a catch-up scan. Later uploads that sort before the old cursor require a new job/scan identity and new private state. Existing v2 derivatives are skipped; old v1 thumbnails remain intact and v1-first API serving is unchanged.
 
-## Task 2A.2 precise change boundaries
+## Code boundaries and validation
 
-1. Inspect `src/thumbnail/production-backfill.js` and `scripts/thumbnail-backfill-prd.js` for all bounds, including the CLI `safeSummary`. Make recipe-aware caps consistent: v1 max 10 (including the default recipe), v2 max 250. Prefer one small shared source of truth; do not add environment configuration or a generic limits framework.
-2. Preserve the default listing page size of 5 and the storage adapter's hard maximum of 10 keys per listing request. The runner must never ask for more than the smaller of page size or remaining examined-object allowance.
-3. Keep `--max-objects` mandatory, integer, bounded and deliberately operator-selected. Preserve existing CLI confirmations and summary field allowlist. A valid 250-object v2 summary must not be rejected as unsafe; invalid, excessive or contradictory summaries must still fail closed without private identifiers.
-4. Add focused offline tests for v1=10/v2=250 boundaries, 251 rejection, validation before storage calls, multi-page progression, cap-paused vs completed, cursor resumption, mixed eligible/ineligible/already-present results, corrupt/unknown state and nonzero sanitized failures. Keep tests and status semantics truthful. Do not weaken existing tests.
-5. Update ONLY the relevant README/backfill runbook limit descriptions; do not change the actual PRD permissions worksheet, deployment wiring or preflight limits (the latter intentionally have different bounds).
-6. Run Node.js 24 focused tests, `npm test`, `node --check` of changed JavaScript, `git diff --check`, and the existing offline synthetic audit benchmark. Summarize results and remaining Docker-volume performance limitation.
+Implement the coordinator as a small, testable local CommonJS entry point reusing existing production backfill CLI/service/storage instead of duplicating image processing or adding services, databases, queues or dependencies. The default plan operation must not contact the provider. Use an unambiguous paired campaign execution confirmation for any future live run; **this task is code-only and grants no live authorization**. Keep summary output aggregate and sanitized.
 
-## Stop and escalation conditions
+Add mocked/offline tests for real scope checkpoint compatibility, strict private plan validation, sequential batch/job transitions, fresh Sydney catch-up, original v1-scope v2 generation, existing-derivative skips, stop/resume, failed/unknown state, no progress, finite limits and no sensitive output. Preserve current tests; run Node.js 24 `npm test`, `node --check` and `git diff --check`, with synthetic benchmark where feasible. Stop if an unsafe state migration, policy expansion or cloud access would be required.
 
-Stop if branch/worktree status is unexpected, any security or durability invariant cannot be preserved, a state format or fingerprint migration becomes necessary, there is a requirement to access production state or cloud services, or tool permission is denied. Report the precise blocker without inventing a workaround. No production usage of the 250 limit is approved by this coding task.
+Leave changes uncommitted for owner review. The owner commits and pushes feature branch only after local review; a protected-`master` PR and TEST validation precede any separate PRD operational approval.

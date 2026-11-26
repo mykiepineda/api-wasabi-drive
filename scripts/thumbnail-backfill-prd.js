@@ -131,6 +131,7 @@ const main = async (
     createStorage = createThumbnailPrdBackfillStorage,
     runScan = runProductionBackfill,
     platform = process.platform,
+    assertPrivatePathImpl,
   } = {},
 ) => {
   try {
@@ -148,11 +149,14 @@ const main = async (
       : parseBoundedInteger(options.pageSize, 1, 10, "invalid-page-size");
     if (options.execute) {
       if (platform === "win32") throw new Error("directory-sync-unsupported");
-      validateStatePaths(recipeStatePaths({
-        recipeId: options.recipeId,
-        checkpointPath: options.checkpoint,
-        auditPath: options.audit,
-      }));
+      validateStatePaths({
+        ...recipeStatePaths({
+          recipeId: options.recipeId,
+          checkpointPath: options.checkpoint,
+          auditPath: options.audit,
+        }),
+        ...(assertPrivatePathImpl ? { assertPrivatePathImpl } : {}),
+      });
     } else if (options.checkpoint !== undefined || options.audit !== undefined) {
       throw new Error("dry-run-local-state-not-allowed");
     }
@@ -183,6 +187,7 @@ const main = async (
       auditPath: options.audit,
       recipeId: options.recipeId,
       platform,
+      assertPrivatePathImpl,
     });
     const summary = safeSummary(result, { recipeId: options.recipeId, maxObjects });
     write(JSON.stringify(summary));

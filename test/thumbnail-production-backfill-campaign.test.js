@@ -19,6 +19,7 @@ const {
   runCampaign,
   validateCampaignPlan,
 } = require("../src/thumbnail/production-backfill-campaign");
+const { createThumbnailKey, normalizeEtag } = require("../src/thumbnail/key");
 const { main: backfillCliMain } = require("../scripts/thumbnail-backfill-prd");
 
 const temporaryRoots = [];
@@ -135,7 +136,7 @@ const executeCampaign = async (campaign, runSlice, extra = {}) => runCampaign({
   assertPrivatePathImpl: () => {},
   ...extra,
 });
-const runActualCliSlice = async (args, { env: prdEnv, root, storage }) => {
+const runActualCliSlice = async (args, { env: prdEnv, root, storage, generate }) => {
   const output = [];
   const exitCode = await backfillCliMain(args, {
     env: prdEnv,
@@ -145,6 +146,7 @@ const runActualCliSlice = async (args, { env: prdEnv, root, storage }) => {
     createStorage: () => storage,
     runScan: (options) => runProductionBackfill({
       ...options,
+      generate,
       platform: "linux",
       assertPrivatePathImpl: () => {},
       saveCheckpoint: (checkpointPath, checkpoint) =>
@@ -163,6 +165,58 @@ const runActualCliSlice = async (args, { env: prdEnv, root, storage }) => {
   });
   return { exitCode, output };
 };
+const mockedV2Generator = (processedKeys) => async (options) => {
+  const metadata = await options.storage.headSource({
+    bucket: options.sourceBucket,
+    key: options.sourceKey,
+    region: options.sourceRegion,
+  });
+  const normalizedEtag = normalizeEtag(metadata?.etag);
+  if (
+    normalizedEtag !== normalizeEtag(options.expectedEtag)
+    || metadata?.size !== options.expectedSize
+  ) return { category: "failed", count: 1 };
+  const derivedKey = createThumbnailKey({
+    sourceRegion: options.sourceRegion,
+    sourceBucket: options.sourceBucket,
+    completeSourceKey: options.sourceKey,
+    normalizedETag: normalizedEtag,
+    formatVersion: options.recipeId,
+  });
+  if (await options.storage.headDerived({
+    bucket: options.destinationBucket,
+    key: derivedKey,
+    region: options.destinationRegion,
+  })) return { category: "already-present", count: 1, derivedKey };
+
+  const sourceBytes = await options.storage.getSourceBuffer({
+    bucket: options.sourceBucket,
+    key: options.sourceKey,
+    region: options.sourceRegion,
+    etag: metadata.etag,
+    size: metadata.size,
+  });
+  if (!Buffer.isBuffer(sourceBytes) || sourceBytes.length === 0) {
+    return { category: "failed", count: 1 };
+  }
+  processedKeys.push(options.sourceKey);
+  const eventId = options.recordWriteIntent(derivedKey);
+  await options.storage.putDerived({
+    bucket: options.destinationBucket,
+    key: derivedKey,
+    region: options.destinationRegion,
+    body: Buffer.from("mock-webp"),
+  });
+  options.recordWriteOutcome(eventId, derivedKey, "generated");
+  return { category: "generated", count: 1, derivedKey };
+};
+const derivedKeyFor = (sourceRegion, sourceBucket, sourceKey, etag) => createThumbnailKey({
+  sourceRegion,
+  sourceBucket,
+  completeSourceKey: sourceKey,
+  normalizedETag: normalizeEtag(etag),
+  formatVersion: "v2",
+});
 
 test("campaign CLI requires the paired execution gate and rejects unknown arguments", () => {
   assert.throws(() => parseArguments([]), { message: "invalid-arguments" });
@@ -293,12 +347,13 @@ test("campaign progresses sequentially across bounded slices and reconciles sani
     ["completed", { examined: 1, alreadyPresent: 1 }, "photos/2026/c.jpg"],
     ["completed", { examined: 1, alreadyPresent: 1 }, "pilot/a.jpg"],
   ];
+  const progressReports = [];
   const result = await executeCampaign(campaign, async (args, { jobIndex, sliceIndex }) => {
     calls.push({ args, jobIndex, sliceIndex });
     const [category, counts, cursor] = outcomes.shift();
     checkpointFor(campaign.jobs[jobIndex - 1], cursor);
     return { exitCode: 0, output: [summaryLine(category, counts)] };
-  });
+  }, { writeProgress: (progress) => progressReports.push(progress) });
 
   assert.equal(result.category, "completed");
   assert.equal(result.slices, 3);
@@ -318,6 +373,43 @@ test("campaign progresses sequentially across bounded slices and reconciles sani
   assert.equal(result.jobs[1].alreadyPresent, 1);
   assert.equal(result.totals.examined, 4);
   assert.equal(result.totals.generated + result.totals.alreadyPresent, 4);
+  assert.deepEqual(progressReports, [
+    {
+      jobIndex: 1,
+      slice: 1,
+      category: "paused-cap",
+      examined: 2,
+      generated: 2,
+      alreadyPresent: 0,
+      unsupported: 0,
+      oversize: 0,
+      failed: 0,
+    },
+    {
+      jobIndex: 1,
+      slice: 2,
+      category: "completed",
+      examined: 3,
+      generated: 2,
+      alreadyPresent: 1,
+      unsupported: 0,
+      oversize: 0,
+      failed: 0,
+    },
+    {
+      jobIndex: 2,
+      slice: 1,
+      category: "completed",
+      examined: 4,
+      generated: 2,
+      alreadyPresent: 2,
+      unsupported: 0,
+      oversize: 0,
+      failed: 0,
+    },
+  ]);
+  assert.equal(JSON.stringify(progressReports).includes("approved-photo-library"), false);
+  assert.equal(JSON.stringify(progressReports).includes("photos/2026"), false);
   assert.notEqual(campaign.jobs[0].scopeId, campaign.jobs[1].scopeId);
   assert.notEqual(campaign.jobs[0].paths.checkpointPath, campaign.jobs[1].paths.checkpointPath);
   assert.notEqual(campaign.jobs[0].paths.auditPath, campaign.jobs[1].paths.auditPath);
@@ -410,7 +502,15 @@ test("251 synthetic objects take a 250-object slice then complete with bounded p
 
 test("existing state resumes without resetting its cursor and requires an exact clean-boundary backup", async () => {
   const root = makeRoot();
-  const plan = basePlan(root);
+  const plan = basePlan(root, [
+    baseJob(root, { index: 1 }),
+    baseJob(root, {
+      index: 2,
+      sourceBucket: sourceEntries[1].bucket,
+      sourceRegion: sourceEntries[1].region,
+      prefix: "pilot/",
+    }),
+  ]);
   const campaign = validate(root, plan);
   const selected = campaign.jobs[0];
   const savedKey = "photos/2026/prior.jpg";
@@ -425,10 +525,12 @@ test("existing state resumes without resetting its cursor and requires an exact 
       exitCode: 0,
       output: [summaryLine("completed")],
     };
-  });
-  assert.equal(result.category, "completed", JSON.stringify(result));
+  }, { stopRequested: () => callCount > 0 });
+  assert.equal(result.category, "stopped", JSON.stringify(result));
   assert.equal(callCount, 1);
   assert.equal(result.jobs[0].scanState, "resumed-existing-scan");
+  assert.equal(result.jobs[1].category, "not-started");
+  assert.equal(result.jobs[1].scanState, "not-started");
   assert.equal(
     JSON.parse(fs.readFileSync(selected.paths.checkpointPath, "utf8")).lastCompletedKey,
     savedKey,
@@ -483,8 +585,12 @@ test("Sydney catch-up uses a fresh checkpoint while the prior job history stays 
     "photos/2026/z-last.jpg",
   ];
   const startAfterValues = [];
+  const processedKeys = [];
   let sourceReads = 0;
   let derivedWrites = 0;
+  const presentDerived = new Set([
+    derivedKeyFor(sourceEntries[0].region, sourceEntries[0].bucket, keys[0], '"sydney-etag-0"'),
+  ]);
   const storage = {
     async listSourcePage(params) {
       startAfterValues.push(params.startAfter);
@@ -501,27 +607,38 @@ test("Sydney catch-up uses a fresh checkpoint while the prior job history stays 
       const index = keys.indexOf(key);
       return { etag: `"sydney-etag-${index}"`, size: 1000 };
     },
-    async headDerived() {
-      return true;
+    async headDerived({ key }) {
+      return presentDerived.has(key);
     },
     async getSourceBuffer() {
       sourceReads += 1;
-      throw new Error("existing derivatives must not read source bodies");
+      return Buffer.from("mock-source");
     },
-    async putDerived() {
+    async putDerived({ key }) {
       derivedWrites += 1;
-      throw new Error("existing derivatives must not write");
+      presentDerived.add(key);
     },
   };
-  const result = await executeCampaign(campaign, (args, options) =>
-    runActualCliSlice(args, { ...options, root, storage }));
-  assert.equal(result.category, "completed");
+  let sliceOutput;
+  const result = await executeCampaign(campaign, async (args, options) => {
+    const slice = await runActualCliSlice(args, {
+      ...options,
+      root,
+      storage,
+      generate: mockedV2Generator(processedKeys),
+    });
+    sliceOutput = slice.output;
+    return slice;
+  });
+  assert.equal(result.category, "completed", JSON.stringify({ result, sliceOutput }));
   assert.equal(result.jobs[0].scanState, "started-new-scan");
   assert.equal(result.jobs[0].examined, 2);
-  assert.equal(result.jobs[0].alreadyPresent, 2);
+  assert.equal(result.jobs[0].alreadyPresent, 1);
+  assert.equal(result.jobs[0].generated, 1);
   assert.deepEqual(startAfterValues, [undefined]);
-  assert.equal(sourceReads, 0);
-  assert.equal(derivedWrites, 0);
+  assert.deepEqual(processedKeys, [keys[1]]);
+  assert.equal(sourceReads, 1);
+  assert.equal(derivedWrites, 1);
   assert.notEqual(
     campaign.jobs[0].paths.checkpointPath,
     recipeStatePaths({ recipeId: "v2", checkpointPath: oldJob.checkpointPath }).checkpointPath,
@@ -541,41 +658,67 @@ test("a v1 Tokyo pilot can be selected as v2 without changing its v1 state", asy
   fs.writeFileSync(planJob.checkpointPath, legacyCheckpoint);
   fs.writeFileSync(planJob.auditPath, legacyAudit);
   const campaign = validate(root, basePlan(root, [planJob]));
-  const sourceKey = "pilot/photo.jpg";
+  const sourceKeys = ["pilot/a-photo.jpg", "pilot/b-photo.jpg"];
+  const processedKeys = [];
   let sourceReads = 0;
   let derivedWrites = 0;
   let selectedRecipe;
+  const presentDerived = new Set([
+    derivedKeyFor(
+      sourceEntries[1].region,
+      sourceEntries[1].bucket,
+      sourceKeys[0],
+      '"tokyo-etag-0"',
+    ),
+  ]);
   const storage = {
     async listSourcePage() {
       return {
-        Contents: [{ Key: sourceKey, Size: 1000, ETag: '"tokyo-etag"' }],
+        Contents: sourceKeys.map((Key, index) => ({
+          Key,
+          Size: 1000,
+          ETag: `"tokyo-etag-${index}"`,
+        })),
         IsTruncated: false,
       };
     },
-    async headSource() {
-      return { etag: '"tokyo-etag"', size: 1000 };
+    async headSource({ key }) {
+      return {
+        etag: `"tokyo-etag-${sourceKeys.indexOf(key)}"`,
+        size: 1000,
+      };
     },
-    async headDerived() {
-      return true;
+    async headDerived({ key }) {
+      return presentDerived.has(key);
     },
     async getSourceBuffer() {
       sourceReads += 1;
-      throw new Error("existing v2 derivative must skip body read");
+      return Buffer.from("mock-source");
     },
-    async putDerived() {
+    async putDerived({ key }) {
       derivedWrites += 1;
-      throw new Error("v1 state is not a v2 write target");
+      presentDerived.add(key);
     },
   };
-  const result = await executeCampaign(campaign, (args, options) => {
+  let sliceOutput;
+  const result = await executeCampaign(campaign, async (args, options) => {
     selectedRecipe = args[args.indexOf("--recipe") + 1];
-    return runActualCliSlice(args, { ...options, root, storage });
+    const slice = await runActualCliSlice(args, {
+      ...options,
+      root,
+      storage,
+      generate: mockedV2Generator(processedKeys),
+    });
+    sliceOutput = slice.output;
+    return slice;
   });
-  assert.equal(result.category, "completed");
+  assert.equal(result.category, "completed", JSON.stringify({ result, sliceOutput }));
   assert.equal(result.jobs[0].alreadyPresent, 1);
+  assert.equal(result.jobs[0].generated, 1);
   assert.equal(selectedRecipe, "v2");
-  assert.equal(sourceReads, 0);
-  assert.equal(derivedWrites, 0);
+  assert.deepEqual(processedKeys, [sourceKeys[1]]);
+  assert.equal(sourceReads, 1);
+  assert.equal(derivedWrites, 1);
   assert.equal(fs.existsSync(campaign.jobs[0].paths.checkpointPath), true);
   assert.deepEqual(fs.readFileSync(planJob.checkpointPath), legacyCheckpoint);
   assert.deepEqual(fs.readFileSync(planJob.auditPath), legacyAudit);
@@ -646,12 +789,29 @@ test("campaign stops on provider failure, unexpected CLI output, invalid counts 
       const result = await executeCampaign(campaign, runSlice);
       assert.equal(result.category, "failed");
       assert.equal(result.jobs[0].category, "failed");
+      assert.equal(result.jobs[0].scanState, "started-new-scan");
       assert.equal(result.jobs[1].category, "not-started");
+      assert.equal(result.jobs[1].scanState, "not-started");
     });
   }
 });
 
 test("stop requests and finite slice budgets return non-completed statuses", async (t) => {
+  await t.test("stop before the first slice leaves the job unstarted", async () => {
+    const root = makeRoot();
+    const campaign = validate(root, basePlan(root));
+    let sliceCalls = 0;
+    const result = await executeCampaign(campaign, async () => {
+      sliceCalls += 1;
+      return { exitCode: 0, output: [summaryLine("completed")] };
+    }, { stopRequested: () => true });
+    assert.equal(result.category, "stopped");
+    assert.equal(result.slices, 0);
+    assert.equal(sliceCalls, 0);
+    assert.equal(result.jobs[0].category, "not-started");
+    assert.equal(result.jobs[0].scanState, "not-started");
+  });
+
   await t.test("stop between slices", async () => {
     const root = makeRoot();
     const plan = basePlan(root);
@@ -667,6 +827,7 @@ test("stop requests and finite slice budgets return non-completed statuses", asy
       && fs.existsSync(campaign.jobs[0].paths.checkpointPath) });
     assert.equal(result.category, "stopped");
     assert.equal(result.slices, 1);
+    assert.equal(result.jobs[0].scanState, "started-new-scan");
     assert.notEqual(result.category, "completed");
   });
 
@@ -759,13 +920,26 @@ test("successful campaign summary exposes only sanitized indices and aggregate c
     assertPrivatePathImpl: () => {},
   });
   assert.equal(code, 0);
-  assert.equal(output.length, 1);
-  assert.equal(output[0].includes("approved-photo-library"), false);
-  assert.equal(output[0].includes("private-derived-library"), false);
-  assert.equal(output[0].includes("private-access-value"), false);
-  assert.equal(output[0].includes("private-secret-value"), false);
-  assert.equal(output[0].includes(planPath), false);
+  assert.equal(output.length, 2);
+  assert.equal(output.every((line) =>
+    !line.includes("approved-photo-library")
+    && !line.includes("private-derived-library")
+    && !line.includes("private-access-value")
+    && !line.includes("private-secret-value")
+    && !line.includes(planPath)), true);
   assert.deepEqual(JSON.parse(output[0]), {
+    type: "progress",
+    jobIndex: 1,
+    slice: 1,
+    category: "completed",
+    examined: 0,
+    generated: 0,
+    alreadyPresent: 0,
+    unsupported: 0,
+    oversize: 0,
+    failed: 0,
+  });
+  assert.deepEqual(JSON.parse(output[1]), {
     category: "completed",
     slices: 1,
     jobs: [{

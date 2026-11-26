@@ -358,6 +358,7 @@ const runCampaign = async ({
   env,
   runSlice = (args, options) => invokeProductionCli(args, { env: options.env }),
   stopRequested = () => false,
+  writeProgress = () => {},
   assertPrivatePathImpl,
   lstatImpl = fs.lstatSync,
 }) => {
@@ -375,12 +376,6 @@ const runCampaign = async ({
         return { category: "failed", slices, totals, jobs: jobProgress };
       }
     }
-    initialStates.forEach((state, index) => {
-      jobProgress[index].scanState = state.resumed
-        ? "resumed-existing-scan"
-        : "started-new-scan";
-    });
-
     for (const [jobIndex, job] of campaign.jobs.entries()) {
       const progress = jobProgress[jobIndex];
       while (progress.category !== "completed") {
@@ -412,6 +407,11 @@ const runCampaign = async ({
           "--execute",
           "--confirm-prd-backfill",
         ];
+        if (progress.scanState === "not-started") {
+          progress.scanState = initialStates[jobIndex].resumed
+            ? "resumed-existing-scan"
+            : "started-new-scan";
+        }
         let sliceResult;
         try {
           sliceResult = await runSlice(args, { env, jobIndex: job.index, sliceIndex: slices + 1 });
@@ -458,6 +458,12 @@ const runCampaign = async ({
           return { category: "failed", slices, totals, jobs: jobProgress };
         }
         progress.category = summary.category;
+        writeProgress({
+          jobIndex: job.index,
+          slice: progress.slices,
+          category: summary.category,
+          ...totals,
+        });
       }
     }
   } catch {
@@ -548,6 +554,7 @@ const main = async (
       env,
       runSlice,
       stopRequested,
+      writeProgress: (progress) => write(JSON.stringify({ type: "progress", ...progress })),
       assertPrivatePathImpl,
       lstatImpl,
     });

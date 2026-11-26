@@ -366,3 +366,65 @@ The pilot checks the deterministic destination key before any source-body downlo
 B1 does not authorize production writes or a backfill, and adds no SNS processing, Lambda worker, API/frontend changes, or cloud resources.
 
 The production backfill requires an explicit --max-objects value. Recipe v1, including the default recipe, permits 1–10 examined objects per invocation. Explicit --recipe v2 permits 1–250. Source listing requests remain limited to 10 objects each, with a default page size of 5. A higher invocation limit does not authorize production execution.
+
+## Phase 8D-D Task 2B — Local PRD v2 backfill campaigns
+
+The local campaign coordinator schedules existing bounded v2 backfill invocations in order. It reuses the production backfill CLI, service, storage adapter, audit journal, checkpoint validation and shared writer lock; it is not an image manifest, a new source authorization mechanism, synchronization, or automated bucket discovery. The campaign plan selects only sources already enrolled by the existing exact `{bucket, region}` PRD configuration. The derived destination and dedicated credentials continue to come only from the validated production environment.
+
+Keep the plan, checkpoints, audit journals, clean-boundary backups and stop signals private and outside the Git working tree. In the backfill container, mount the private Linux-backed state volume at `/state`; the existing Dockerfile sets `HOME=/state`, so the established writer lock is `/state/.wasabi-drive-thumbnail-backfill-prd.lock`. The plan and all per-job state/backup paths must be absolute paths under `/state`. The plan itself must be a private, regular, single-link file.
+
+The plan has exactly these top-level fields. Each job requires a literal `prefix` **or** `wholeBucket: true` (never both); `pageSize` is optional and defaults to 5. Checkpoint, audit and backup paths are base paths: the existing CLI resolves each v2 path by inserting `.v2` before its extension. Paths must be unique after that resolution. `batchLimit` is 1–250; `pageSize` is 1–10; `maxSlices` is a finite campaign-session limit from 1–1000.
+
+```json
+{
+  "version": 1,
+  "stage": "prd",
+  "recipe": "v2",
+  "maxSlices": 100,
+  "jobs": [
+    {
+      "sourceBucket": "<exact-enrolled-source-bucket>",
+      "sourceRegion": "ap-southeast-2",
+      "prefix": "photos/2026/",
+      "checkpointPath": "/state/library-2026-checkpoint.json",
+      "auditPath": "/state/library-2026-audit.jsonl",
+      "checkpointBackupPath": "/state/library-2026-checkpoint-backup.json",
+      "auditBackupPath": "/state/library-2026-audit-backup.jsonl",
+      "batchLimit": 250,
+      "pageSize": 5
+    }
+  ]
+}
+```
+
+For an explicitly enrolled whole-bucket scan, remove `prefix` and use `"wholeBucket": true`; an absent or empty prefix never means bucket root. Prefixes are literal slash-terminated paths; wildcard characters are rejected. Use one job per non-overlapping source scope and separate state paths for each scan identity. Protected, internal, TEST, excluded and derived buckets are rejected. Unknown fields—including plan-supplied destination or credential values—are rejected.
+
+For a new scan, the four state/backup files must all be absent. On restart of an existing scan, the checkpoint backup must be an exact copy of the current checkpoint, and the audit backup must exactly match the current audit file when one exists (otherwise its backup must be absent). A missing or stale backup stops validation. After a campaign changes state, make a fresh clean-boundary backup before restarting; never overwrite, reset, repair or delete historical state to make validation pass.
+
+Run validation first. This reads the private plan and local configuration and checks any existing checkpoint/audit files against their declared clean-boundary backups. It does not create storage clients, list source objects, acquire a lock, read photo bodies or write files:
+
+```sh
+node /app/scripts/thumbnail-backfill-campaign-prd.js --plan /state/campaign.json
+# Equivalent explicit validation:
+node /app/scripts/thumbnail-backfill-campaign-prd.js --plan /state/campaign.json --validate-plan
+```
+
+The following is execution syntax only, **not production authorization**. A live run requires both campaign flags and, independently, the existing paired per-invocation backfill confirmations. The owner must separately approve the actual PRD campaign and environment before using them:
+
+```sh
+node /app/scripts/thumbnail-backfill-campaign-prd.js --plan /state/campaign.json --execute-campaign --confirm-prd-campaign
+```
+
+To keep the existing Dockerfile entrypoint unchanged, override it only for the campaign command and mount the same private state volume:
+
+```sh
+docker run --rm --mount type=bind,source=/private/wasabi-state,target=/state --entrypoint node wasabi-backfill-image /app/scripts/thumbnail-backfill-campaign-prd.js --plan /state/campaign.json
+```
+
+The coordinator validates every job and its state before beginning. It runs one bounded invocation at a time, continues only from a valid `paused-cap` result with reconciled counters and an advancing v2 checkpoint, and advances to the next job only after verified `completed` (including an empty scope). Provider/state failures, ambiguous writes, lock conflicts/loss, missing or invalid backups, unexpected CLI output, no progress, stop requests and the finite slice guard stop the campaign; no failed job is silently restarted from a new checkpoint. The shared writer lock remains owned by each existing CLI invocation and is released between slices. Do not run any other backfill writer during a campaign; the lock is not held campaign-wide or distributed across machines.
+
+Use Ctrl+C (`SIGINT`) or a graceful container stop (`SIGTERM`) to request a stop. The coordinator finishes the current bounded slice, then stops before starting another. A `stopped` or `paused-budget` result is not completion. Restart only with the same plan and state, after validating and backing up the current state. Summary JSON contains only job indices, scan-state labels and aggregate counters for this process session; it does not represent totals from earlier runs and never claims a cursor-based resume is a catch-up scan.
+
+For a Sydney catch-up, use new v2 state paths and a fresh lexical scan; do not reuse or alter any `/state/sydney-100/` historical checkpoint or audit. Existing matching v2 derivatives are skipped by the backfill. For the original Tokyo v1 pilot, select that already enrolled source as a separate v2 job with separate state; v1 derivatives and API v1-first serving remain unchanged. Later uploads sorting before a completed cursor require a new scan with new state paths. No campaign or bucket-discovery automation is introduced by this task.
+
+Task 2B is implementation and offline testing only. Validation output, configured credentials, and the paired flags do not authorize Wasabi access, production writes, policy/credential changes, Docker access to real state, deployment, or Git operations.

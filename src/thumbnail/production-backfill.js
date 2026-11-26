@@ -423,6 +423,27 @@ const validateStatePaths = ({ checkpointPath, auditPath, assertPrivatePathImpl =
   return { checkpointPath: validated[0], auditPath: validated[1] };
 };
 
+const validatePrivateFilePath = (requested, assertPrivatePathImpl = assertPrivatePath) => {
+  if (typeof requested !== "string" || !requested || !path.isAbsolute(requested)) {
+    throw new Error("invalid-local-state-path");
+  }
+  const target = path.resolve(requested);
+  const parent = path.dirname(target);
+  const realParent = process.platform === "win32"
+    ? fs.realpathSync(parent).replace(/^\\\\\?\\/, "")
+    : fs.realpathSync(parent);
+  if (!pathsEqual(parent, realParent) || !isOutsideRepository(target)) {
+    throw new Error("invalid-local-state-path");
+  }
+  assertPrivatePathImpl(parent, fs.statSync(parent), true);
+  const metadata = fs.lstatSync(target);
+  if (metadata.isSymbolicLink() || metadata.nlink !== 1) {
+    throw new Error("invalid-local-state-path");
+  }
+  assertPrivatePathImpl(target, metadata);
+  return path.join(realParent, path.basename(target));
+};
+
 const scopeFingerprint = (scope) =>
   crypto.createHash("sha256").update(JSON.stringify([
     scope.sourceBucket,
@@ -448,16 +469,25 @@ const processingFingerprint = (scope, recipeId = "v1") => {
     ])).digest("hex");
 };
 
+const persistedScope = (scope) => ({
+  sourceBucket: scope.sourceBucket,
+  sourceRegion: scope.sourceRegion,
+  prefix: scope.prefix,
+  destinationBucket: scope.destinationBucket,
+  destinationRegion: scope.destinationRegion,
+});
+
 const buildCheckpoint = (scope, lastCompletedKey, recipeId = "v1") => {
   if (!isSupportedThumbnailRecipe(recipeId)) {
     throw new Error("unsupported-thumbnail-recipe");
   }
+  const checkpointScope = persistedScope(scope);
   return recipeId === "v1"
-    ? { version: CHECKPOINT_VERSION, scope, lastCompletedKey }
+    ? { version: CHECKPOINT_VERSION, scope: checkpointScope, lastCompletedKey }
     : {
       version: V2_CHECKPOINT_VERSION,
       recipeId,
-      scope,
+      scope: checkpointScope,
       lastCompletedKey,
     };
 };
@@ -496,6 +526,7 @@ const readCheckpoint = (
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
   }
+  const currentScope = persistedScope(scope);
   if (
     !parsed
     || typeof parsed !== "object"
@@ -517,7 +548,7 @@ const readCheckpoint = (
     || Array.isArray(parsed.scope)
     || Object.keys(parsed.scope).sort().join(",")
       !== "destinationBucket,destinationRegion,prefix,sourceBucket,sourceRegion"
-    || Object.keys(scope).some((key) => parsed.scope[key] !== scope[key])
+    || Object.keys(currentScope).some((key) => parsed.scope[key] !== currentScope[key])
   ) {
     throw new Error("checkpoint-scope-mismatch");
   }
@@ -1243,6 +1274,7 @@ module.exports = {
   runProductionBackfill,
   validateBucket,
   validatePrefix,
+  validatePrivateFilePath,
   validateSourceScope,
   validateStatePaths,
   syncDirectory,

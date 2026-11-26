@@ -1513,6 +1513,100 @@ test("v2 checkpoint and audit resume independently from the unchanged legacy v1 
   assert.equal(v1ResumeListing.calls[0].startAfter, `${scope.prefix}a.jpg`);
 });
 
+test("CLI-shaped v2 scopes persist only canonical identity fields and resume for prefixes and root", async (t) => {
+  const optInEnv = configEnv({
+    THUMBNAIL_PRD_V2_SOURCE_BUCKETS_JSON: JSON.stringify([{
+      bucket: scope.sourceBucket,
+      region: scope.sourceRegion,
+    }]),
+    THUMBNAIL_PRD_V2_EXCLUDED_BUCKETS_JSON: JSON.stringify(["protected-test-bucket"]),
+    THUMBNAIL_PRD_V2_DERIVED_BUCKET: scope.destinationBucket,
+  });
+  delete optInEnv.THUMBNAIL_PRD_BACKFILL_SOURCE_BUCKET;
+  delete optInEnv.THUMBNAIL_PRD_BACKFILL_SOURCE_REGION;
+  delete optInEnv.THUMBNAIL_PRD_BACKFILL_SOURCE_PREFIX;
+  const configV2 = loadProductionBackfillConfig(optInEnv, "v2");
+
+  for (const selector of [
+    { prefix: scope.prefix, wholeBucket: false, key: `${scope.prefix}image.jpg` },
+    { prefix: "", wholeBucket: true, key: "image.jpg" },
+  ]) {
+    await t.test(selector.wholeBucket ? "explicit whole bucket" : "literal prefix", async () => {
+      const state = statePaths();
+      const v2State = recipeStatePaths({ recipeId: "v2", ...state });
+      const runtimeScope = {
+        sourceBucket: scope.sourceBucket,
+        sourceRegion: scope.sourceRegion,
+        prefix: selector.prefix,
+        destinationBucket: configV2.destinationBucket,
+        destinationRegion: configV2.destinationRegion,
+        wholeBucket: selector.wholeBucket,
+        prdV2: Boolean(configV2._prdV2),
+        sourceEnrollment: configV2._prdV2.enrollment,
+      };
+      validateSourceScope(runtimeScope, configV2, "v2");
+      const firstStorage = storageFor([{
+        Contents: [makeItem(selector.key)],
+        IsTruncated: false,
+      }]);
+      const first = await runProductionBackfill({
+        scope: runtimeScope,
+        storage: firstStorage.storage,
+        maxObjects: 1,
+        dryRun: false,
+        recipeId: "v2",
+        ...state,
+        generate: async () => ({ category: "already-present", count: 1 }),
+      });
+      assert.equal(first.category, "completed");
+      assert.equal(fs.existsSync(v2State.checkpointPath), true);
+
+      const checkpoint = JSON.parse(fs.readFileSync(v2State.checkpointPath, "utf8"));
+      const resumedStorage = storageFor([{
+        Contents: [],
+        IsTruncated: false,
+      }]);
+      const resumed = await runProductionBackfill({
+        scope: runtimeScope,
+        storage: resumedStorage.storage,
+        maxObjects: 1,
+        dryRun: false,
+        recipeId: "v2",
+        ...state,
+        generate: async () => {
+          throw new Error("empty resumed scope must not generate");
+        },
+      });
+      assert.equal(resumed.category, "completed", JSON.stringify(resumed));
+      assert.equal(resumed.examined, 0);
+      assert.equal(resumedStorage.calls[0].startAfter, selector.key);
+      assert.deepEqual(Object.keys(checkpoint.scope).sort(), [
+        "destinationBucket",
+        "destinationRegion",
+        "prefix",
+        "sourceBucket",
+        "sourceRegion",
+      ]);
+      assert.deepEqual(checkpoint, {
+        version: 2,
+        recipeId: "v2",
+        scope: {
+          sourceBucket: runtimeScope.sourceBucket,
+          sourceRegion: runtimeScope.sourceRegion,
+          prefix: runtimeScope.prefix,
+          destinationBucket: runtimeScope.destinationBucket,
+          destinationRegion: runtimeScope.destinationRegion,
+        },
+        lastCompletedKey: selector.key,
+      });
+      assert.equal(
+        processingFingerprint(runtimeScope, "v2"),
+        processingFingerprint(checkpoint.scope, "v2"),
+      );
+    });
+  }
+});
+
 test("audit parser preserves legacy and intent/outcome history semantics with linear state tracking", async (t) => {
   const timestamp = "2026-01-01T00:00:00.000Z";
   const auditScopeId = (recipeId) => processingFingerprint(scope, recipeId);
